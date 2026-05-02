@@ -79,19 +79,19 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
   });
 
   await client.stablecoinCheckout({ amount: 25, workspaceId: "ws_1" });
-  await client.walletChallenge("0x0000000000000000000000000000000000000001");
-  await client.walletVerify({ address: "0x1", message: "m", signature: "sig" });
+  await client.authSession();
+  await client.logout();
 
   assert.deepEqual(calls[0], {
     url: `${DEFAULT_API_BASE_URL}/billing/checkout`,
     method: "POST",
     body: { amount: 25, payment_method: "stablecoin", workspace_id: "ws_1" },
   });
-  assert.equal(calls[1].url, `${DEFAULT_API_BASE_URL}/auth/wallet/challenge`);
+  assert.equal(calls[1].url, `${DEFAULT_API_BASE_URL}/auth/session`);
   assert.deepEqual(calls[2], {
-    url: `${DEFAULT_API_BASE_URL}/auth/wallet/verify`,
+    url: `${DEFAULT_API_BASE_URL}/auth/logout`,
     method: "POST",
-    body: { address: "0x1", message: "m", signature: "sig" },
+    body: undefined,
   });
 });
 

@@ -65,12 +65,6 @@ export declare class TrustedRouter {
     successUrl?: string;
     cancelUrl?: string;
   }): Promise<Record<string, unknown>>;
-  walletChallenge(address: string): Promise<Record<string, unknown>>;
-  walletVerify(params: {
-    address: string;
-    message: string;
-    signature: string;
-  }): Promise<Record<string, unknown>>;
   authSession(): Promise<Record<string, unknown>>;
   logout(): Promise<Record<string, unknown>>;
   activity(params?: Record<string, string | number | boolean | null | undefined>): Promise<

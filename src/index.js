@@ -141,16 +141,6 @@ export class TrustedRouter {
     return this.billingCheckout({ amount, paymentMethod: "stablecoin", ...params });
   }
 
-  walletChallenge(address) {
-    return this.request("POST", "/auth/wallet/challenge", { body: { address } });
-  }
-
-  walletVerify({ address, message, signature }) {
-    return this.request("POST", "/auth/wallet/verify", {
-      body: { address, message, signature },
-    });
-  }
-
   authSession() {
     return this.request("GET", "/auth/session");
   }
