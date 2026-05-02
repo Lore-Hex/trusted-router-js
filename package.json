@@ -1,0 +1,30 @@
+{
+  "name": "@lore-hex/trusted-router",
+  "version": "0.1.0",
+  "description": "JavaScript SDK for TrustedRouter.",
+  "type": "module",
+  "main": "src/index.js",
+  "types": "src/index.d.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "author": "Lore Hex",
+  "homepage": "https://trustedrouter.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lore-Hex/trusted-router-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
+  },
+  "scripts": {
+    "check": "node --check src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
