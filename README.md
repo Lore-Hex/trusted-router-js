@@ -16,16 +16,32 @@ npm install @lore-hex/trusted-router
 ## Usage
 
 ```js
-import { TrustedRouter } from "@lore-hex/trusted-router";
+import { AUTO_MODEL, TrustedRouter } from "@lore-hex/trusted-router";
 
 const client = new TrustedRouter({ apiKey: process.env.TRUSTEDROUTER_API_KEY });
 
 const response = await client.chatCompletions({
-  model: "trustedrouter/auto",
+  model: AUTO_MODEL,
   messages: [{ role: "user", content: "hello" }],
 });
 
 console.log(response.choices[0].message.content);
+```
+
+`trustedrouter/auto` is the default high-level chat model in the SDK. It maps to
+TrustedRouter's provider rollover route.
+
+```js
+const regions = await client.regions();
+const checkout = await client.stablecoinCheckout({ amount: 25 });
+const session = await client.googleAuth({ credential: "google-id-token" });
+const challenge = await client.walletChallenge("0x...");
+
+for await (const token of client.chatCompletionsText({
+  messages: [{ role: "user", content: "stream this" }],
+})) {
+  process.stdout.write(token);
+}
 ```
 
 The SDK intentionally uses OpenAI-compatible request and response shapes. Use
