@@ -34,7 +34,6 @@ TrustedRouter's provider rollover route.
 ```js
 const regions = await client.regions();
 const checkout = await client.stablecoinCheckout({ amount: 25 });
-const session = await client.googleAuth({ credential: "google-id-token" });
 const challenge = await client.walletChallenge("0x...");
 
 for await (const token of client.chatCompletionsText({

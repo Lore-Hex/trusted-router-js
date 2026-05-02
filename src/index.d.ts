@@ -65,12 +65,6 @@ export declare class TrustedRouter {
     successUrl?: string;
     cancelUrl?: string;
   }): Promise<Record<string, unknown>>;
-  googleAuth(params?: {
-    credential?: string;
-    email?: string;
-    name?: string;
-    sub?: string;
-  }): Promise<Record<string, unknown>>;
   walletChallenge(address: string): Promise<Record<string, unknown>>;
   walletVerify(params: {
     address: string;

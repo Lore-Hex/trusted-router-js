@@ -79,7 +79,6 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
   });
 
   await client.stablecoinCheckout({ amount: 25, workspaceId: "ws_1" });
-  await client.googleAuth({ email: "alice@example.com", name: "Alice" });
   await client.walletChallenge("0x0000000000000000000000000000000000000001");
   await client.walletVerify({ address: "0x1", message: "m", signature: "sig" });
 
@@ -88,13 +87,8 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
     method: "POST",
     body: { amount: 25, payment_method: "stablecoin", workspace_id: "ws_1" },
   });
-  assert.deepEqual(calls[1], {
-    url: `${DEFAULT_API_BASE_URL}/auth/google`,
-    method: "POST",
-    body: { email: "alice@example.com", name: "Alice" },
-  });
-  assert.equal(calls[2].url, `${DEFAULT_API_BASE_URL}/auth/wallet/challenge`);
-  assert.deepEqual(calls[3], {
+  assert.equal(calls[1].url, `${DEFAULT_API_BASE_URL}/auth/wallet/challenge`);
+  assert.deepEqual(calls[2], {
     url: `${DEFAULT_API_BASE_URL}/auth/wallet/verify`,
     method: "POST",
     body: { address: "0x1", message: "m", signature: "sig" },

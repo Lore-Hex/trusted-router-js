@@ -141,15 +141,6 @@ export class TrustedRouter {
     return this.billingCheckout({ amount, paymentMethod: "stablecoin", ...params });
   }
 
-  googleAuth({ credential, email, name, sub } = {}) {
-    const body = {};
-    if (credential) body.credential = credential;
-    if (email) body.email = email;
-    if (name) body.name = name;
-    if (sub) body.sub = sub;
-    return this.request("POST", "/auth/google", { body });
-  }
-
   walletChallenge(address) {
     return this.request("POST", "/auth/wallet/challenge", { body: { address } });
   }
