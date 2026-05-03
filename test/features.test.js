@@ -1,8 +1,8 @@
 /**
- * Coverage for the v0.2 feature set added to the JS SDK:
+ * Coverage for the v0.3 feature set added to the JS SDK:
  *   typed errors, retries, region shortcut, per-call extras
- *   (extraHeaders/idempotencyKey/timeout/apiKey),
- *   embeddings + messages, User-Agent header, raw stream.
+ *   (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId),
+ *   messages, User-Agent header, raw stream.
  *
  * No real network — every test wires a mock `fetchImpl` that records
  * the inbound request shape and returns a canned Response.
@@ -16,6 +16,7 @@ import {
   AuthenticationError,
   BadRequestError,
   DEFAULT_API_BASE_URL,
+  EndpointNotSupportedError,
   InternalError,
   NotFoundError,
   PermissionDeniedError,
@@ -84,6 +85,7 @@ const errorCases = [
   [404, NotFoundError],
   [422, BadRequestError],
   [429, RateLimitError],
+  [501, EndpointNotSupportedError],
   [500, InternalError],
   [503, InternalError],
 ];
@@ -300,6 +302,21 @@ test("embeddings: only sends provided optional fields", async () => {
     dimensions: 512,
     user: "u_42",
   });
+});
+
+test("embeddings: hosted 501 maps to EndpointNotSupportedError", async () => {
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async () => jsonResponse(501, {
+      error: { message: "Endpoint is not supported", type: "endpoint_not_supported" },
+    }),
+    maxRetries: 0,
+  });
+
+  await assert.rejects(
+    c.embeddings({ model: "openai/gpt-4o-mini", input: "hello" }),
+    EndpointNotSupportedError,
+  );
 });
 
 test("messages: sends Anthropic-shape body", async () => {

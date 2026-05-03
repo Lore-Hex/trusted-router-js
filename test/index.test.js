@@ -28,6 +28,26 @@ test("normalizes base URL and sends bearer token", async () => {
   assert.equal(calls[0].init.headers.get("authorization"), "Bearer sk-tr-test");
 });
 
+test("sends default and per-call workspace selectors", async () => {
+  const seen = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    workspaceId: "ws_default",
+    fetchImpl: async (_url, init) => {
+      seen.push(init.headers.get("x-trustedrouter-workspace"));
+      return new Response(JSON.stringify({ data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  await client.credits();
+  await client.credits({ workspaceId: "ws_override" });
+
+  assert.deepEqual(seen, ["ws_default", "ws_override"]);
+});
+
 test("raises TrustedRouterError for OpenRouter-shaped errors", async () => {
   const client = new TrustedRouter({
     fetchImpl: async () =>

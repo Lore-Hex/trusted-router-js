@@ -17,6 +17,7 @@ export declare class BadRequestError extends TrustedRouterError {}
 export declare class AuthenticationError extends TrustedRouterError {}
 export declare class PermissionDeniedError extends TrustedRouterError {}
 export declare class NotFoundError extends TrustedRouterError {}
+export declare class EndpointNotSupportedError extends TrustedRouterError {}
 export declare class RateLimitError extends TrustedRouterError {
   retryAfter: number | null;
   constructor(statusCode: number, message: string, payload?: unknown, retryAfter?: number | null);
@@ -34,12 +35,14 @@ export interface TrustedRouterOptions {
   region?: keyof typeof REGION_HOSTS | string | null;
   fetchImpl?: TrustedRouterFetch;
   headers?: Record<string, string>;
+  workspaceId?: string | null;
   maxRetries?: number;
 }
 
 export interface PerCallOptions {
   apiKey?: string | null;
   extraHeaders?: Record<string, string> | null;
+  workspaceId?: string | null;
   idempotencyKey?: string | null;
   /** Per-call timeout in milliseconds (uses AbortController). */
   timeout?: number | null;
@@ -142,7 +145,7 @@ export declare class TrustedRouter {
   models(): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;
   regions(): Promise<Record<string, unknown>>;
-  credits(): Promise<Record<string, unknown>>;
+  credits(options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
   embeddings(req: EmbeddingsRequest): Promise<Record<string, unknown>>;
   messages(req: MessagesRequest): Promise<Record<string, unknown>>;
 

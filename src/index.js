@@ -5,15 +5,15 @@
  *
  * Mirrors the Python SDK's surface so multi-language teams stay in
  * sync: typed errors, automatic retries with backoff, region pinning,
- * per-call extras (extraHeaders/idempotencyKey/timeout/apiKey), and
- * embeddings/messages/activity wrappers.
+ * per-call extras (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId),
+ * and messages/activity wrappers.
  *
  * Attestation verification (`verifyGatewayAttestation`) lives in
  * ./attestation.js — split out so the base bundle stays small and
  * SubtleCrypto is only imported when callers actually need to verify.
  */
 
-export const VERSION = "0.2.0";
+export const VERSION = "0.3.0";
 export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
@@ -73,6 +73,13 @@ export class NotFoundError extends TrustedRouterError {
   }
 }
 
+export class EndpointNotSupportedError extends TrustedRouterError {
+  constructor(...args) {
+    super(...args);
+    this.name = "EndpointNotSupportedError";
+  }
+}
+
 export class RateLimitError extends TrustedRouterError {
   constructor(statusCode, message, payload, retryAfter = null) {
     super(statusCode, message, payload);
@@ -93,6 +100,7 @@ function classifyError(statusCode, message, payload, retryAfter) {
   if (statusCode === 403) return new PermissionDeniedError(statusCode, message, payload);
   if (statusCode === 404) return new NotFoundError(statusCode, message, payload);
   if (statusCode === 429) return new RateLimitError(statusCode, message, payload, retryAfter);
+  if (statusCode === 501) return new EndpointNotSupportedError(statusCode, message, payload);
   if (statusCode >= 400 && statusCode < 500) return new BadRequestError(statusCode, message, payload);
   if (statusCode >= 500) return new InternalError(statusCode, message, payload);
   return new TrustedRouterError(statusCode, message, payload);
@@ -143,6 +151,7 @@ export class TrustedRouter {
     region = null,
     fetchImpl = globalThis.fetch,
     headers = {},
+    workspaceId = null,
     maxRetries = 2,
   } = {}) {
     if (!fetchImpl) {
@@ -160,6 +169,7 @@ export class TrustedRouter {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.region = region;
+    this.workspaceId = workspaceId;
     this.fetch = fetchImpl;
     this.defaultHeaders = headers;
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
@@ -175,11 +185,12 @@ export class TrustedRouter {
       idempotencyKey = null,
       timeout = null,
       extraHeaders = null,
+      workspaceId = null,
       ...rest
     } = init;
 
     const url = `${this.baseUrl}/${String(path).replace(/^\/+/, "")}`;
-    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey });
+    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId });
     const requestBody = serializeBody(body, requestHeaders);
 
     let attempt = 0;
@@ -215,10 +226,11 @@ export class TrustedRouter {
       idempotencyKey = null,
       timeout = null,
       extraHeaders = null,
+      workspaceId = null,
       ...rest
     } = init;
     const url = `${this.baseUrl}/${String(path).replace(/^\/+/, "")}`;
-    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey });
+    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId });
     const requestBody = serializeBody(body, requestHeaders);
     return this._fetchWithTimeout(url, {
       method,
@@ -228,7 +240,7 @@ export class TrustedRouter {
     }, timeout);
   }
 
-  _buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey }) {
+  _buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId }) {
     const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
     for (const [k, v] of Object.entries(this.defaultHeaders)) out.set(k, v);
     if (headers) {
@@ -239,6 +251,8 @@ export class TrustedRouter {
       for (const [k, v] of Object.entries(extraHeaders)) out.set(k, v);
     }
     if (idempotencyKey) out.set("idempotency-key", idempotencyKey);
+    const selectedWorkspaceId = workspaceId ?? this.workspaceId;
+    if (selectedWorkspaceId) out.set("x-trustedrouter-workspace", selectedWorkspaceId);
     const bearer = apiKey ?? this.apiKey;
     if (bearer && !out.has("authorization")) {
       out.set("authorization", `Bearer ${bearer}`);
@@ -347,7 +361,9 @@ export class TrustedRouter {
   models() { return this.request("GET", "/models"); }
   providers() { return this.request("GET", "/providers"); }
   regions() { return this.request("GET", "/regions"); }
-  credits() { return this.request("GET", "/credits"); }
+  credits({ workspaceId = null } = {}) {
+    return this.request("GET", "/credits", { workspaceId });
+  }
 
   embeddings({ model, input, encodingFormat = null, dimensions = null, user = null }) {
     const body = { model, input };
@@ -374,7 +390,7 @@ export class TrustedRouter {
     if (workspaceId !== null) body.workspace_id = workspaceId;
     if (successUrl !== null) body.success_url = successUrl;
     if (cancelUrl !== null) body.cancel_url = cancelUrl;
-    return this.request("POST", "/billing/checkout", { body, idempotencyKey });
+    return this.request("POST", "/billing/checkout", { body, idempotencyKey, workspaceId });
   }
 
   stablecoinCheckout({ amount, ...params } = {}) {

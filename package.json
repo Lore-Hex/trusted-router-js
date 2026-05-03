@@ -1,6 +1,6 @@
 {
   "name": "@lore-hex/trusted-router",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "JavaScript SDK for TrustedRouter — typed errors, retries, region pinning, attestation verification.",
   "type": "module",
   "main": "src/index.js",
