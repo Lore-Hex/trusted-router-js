@@ -1,10 +1,20 @@
 {
   "name": "@lore-hex/trusted-router",
-  "version": "0.1.0",
-  "description": "JavaScript SDK for TrustedRouter.",
+  "version": "0.2.0",
+  "description": "JavaScript SDK for TrustedRouter — typed errors, retries, region pinning, attestation verification.",
   "type": "module",
   "main": "src/index.js",
   "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./attestation": {
+      "types": "./src/attestation.d.ts",
+      "import": "./src/attestation.js"
+    }
+  },
   "files": [
     "src",
     "README.md",
@@ -21,10 +31,23 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js",
+    "check": "node --check src/index.js && node --check src/attestation.js",
     "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
-  }
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "trustedrouter",
+    "openai",
+    "anthropic",
+    "llm",
+    "router",
+    "attested",
+    "confidential-computing"
+  ]
 }
