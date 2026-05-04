@@ -226,6 +226,38 @@ test("extraHeaders propagate to chat request", async () => {
   assert.equal(seen.get("x-trace-id"), "abc-123");
 });
 
+test("chat workspaceId override is header and not request body", async () => {
+  const seen = [];
+  const c = new TrustedRouter({
+    apiKey: "k",
+    workspaceId: "ws_default",
+    fetchImpl: async (_url, init) => {
+      seen.push({
+        workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        body: JSON.parse(init.body),
+      });
+      return sseResponse(
+        'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n' +
+        'data: [DONE]\n\n',
+      );
+    },
+    maxRetries: 0,
+  });
+  await c.chatCompletions({
+    messages: [{ role: "user", content: "hi" }],
+    workspaceId: "ws_override",
+  });
+  for await (const _chunk of c.chatCompletionsRawStream({
+    messages: [{ role: "user", content: "hi" }],
+  })) {
+    // exhaust stream
+  }
+  assert.equal(seen[0].workspace, "ws_override");
+  assert.equal("workspaceId" in seen[0].body, false);
+  assert.equal(seen[1].workspace, "ws_default");
+  assert.equal("workspaceId" in seen[1].body, false);
+});
+
 test("idempotencyKey is sent on billingCheckout", async () => {
   let seen;
   const c = new TrustedRouter({

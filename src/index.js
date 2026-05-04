@@ -281,6 +281,7 @@ export class TrustedRouter {
     apiKey = null,
     extraHeaders = null,
     idempotencyKey = null,
+    workspaceId = null,
     timeout = null,
     ...params
   } = {}) {
@@ -289,7 +290,7 @@ export class TrustedRouter {
     // still get a single result back.
     const chunks = [];
     for await (const chunk of this.chatCompletionsChunks({
-      model, messages, apiKey, extraHeaders, idempotencyKey, timeout, ...params,
+      model, messages, apiKey, extraHeaders, idempotencyKey, workspaceId, timeout, ...params,
     })) {
       chunks.push(chunk);
     }
@@ -303,6 +304,7 @@ export class TrustedRouter {
     apiKey = null,
     extraHeaders = null,
     idempotencyKey = null,
+    workspaceId = null,
     timeout = null,
     ...params
   } = {}) {
@@ -312,6 +314,7 @@ export class TrustedRouter {
       apiKey,
       extraHeaders,
       idempotencyKey,
+      workspaceId,
       timeout,
     });
     if (!response.ok) {
@@ -337,6 +340,7 @@ export class TrustedRouter {
     apiKey = null,
     extraHeaders = null,
     idempotencyKey = null,
+    workspaceId = null,
     timeout = null,
     ...params
   } = {}) {
@@ -346,6 +350,7 @@ export class TrustedRouter {
       apiKey,
       extraHeaders,
       idempotencyKey,
+      workspaceId,
       timeout,
     });
     if (!response.ok) {
