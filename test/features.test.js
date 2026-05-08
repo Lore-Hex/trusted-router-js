@@ -371,6 +371,123 @@ test("messages: sends Anthropic-shape body", async () => {
   assert.equal(body.system, "be helpful");
 });
 
+test("responses: sends workspaceId as header and not request body", async () => {
+  let seen;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    workspaceId: "ws_default",
+    fetchImpl: async (_url, init) => {
+      seen = {
+        workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        body: JSON.parse(init.body),
+      };
+      return jsonResponse(200, {
+        id: "resp_1",
+        object: "response",
+        status: "completed",
+        output: [{ type: "message", content: [{ type: "output_text", text: "pong" }] }],
+      });
+    },
+  });
+  const response = await c.responses({
+    input: "ping",
+    workspaceId: "ws_override",
+    instructions: "be terse",
+    metadata: { source: "test" },
+  });
+  assert.equal(response.id, "resp_1");
+  assert.equal(seen.workspace, "ws_override");
+  assert.equal(seen.body.model, AUTO_MODEL);
+  assert.equal(seen.body.input, "ping");
+  assert.equal(seen.body.stream, false);
+  assert.equal("workspaceId" in seen.body, false);
+});
+
+test("responsesEvents parses Responses SSE event names", async () => {
+  let body;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(
+        "event: response.created\n" +
+        'data: {"type":"response.created","response":{"id":"resp_1"}}\n\n' +
+        "event: response.output_text.delta\n" +
+        'data: {"type":"response.output_text.delta","delta":"pong"}\n\n' +
+        "data: [DONE]\n\n",
+      );
+    },
+  });
+  const events = [];
+  for await (const event of c.responsesEvents({ input: "ping" })) {
+    events.push(event);
+  }
+  assert.equal(body.stream, true);
+  assert.equal(events[0].event, "response.created");
+  assert.equal(events[1].delta, "pong");
+});
+
+test("responsesInputTokens calls the OpenAI-compatible token endpoint", async () => {
+  let url;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (requestUrl) => {
+      url = requestUrl;
+      return jsonResponse(200, { input_tokens: 7, total_tokens: 7 });
+    },
+  });
+  const result = await c.responsesInputTokens({ input: "count me" });
+  assert.equal(url, `${DEFAULT_API_BASE_URL}/responses/input_tokens`);
+  assert.equal(result.input_tokens, 7);
+});
+
+test("broadcast helpers send workspaceId header and destination body", async () => {
+  const seen = [];
+  const c = new TrustedRouter({
+    apiKey: "k",
+    workspaceId: "ws_default",
+    fetchImpl: async (url, init) => {
+      seen.push({
+        url,
+        method: init.method,
+        workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        body: init.body ? JSON.parse(init.body) : null,
+      });
+      return jsonResponse(200, { data: { id: "bdst_1" } });
+    },
+  });
+  await c.broadcastDestinations();
+  await c.createBroadcastDestination({
+    type: "webhook",
+    name: "OTLP",
+    endpoint: "https://hook.example/otlp",
+    headers: { Authorization: "Bearer x" },
+    workspaceId: "ws_override",
+  });
+  await c.testBroadcastDestination("bdst_1");
+
+  assert.equal(seen[0].url, `${DEFAULT_API_BASE_URL}/broadcast/destinations`);
+  assert.equal(seen[0].workspace, "ws_default");
+  assert.equal(seen[1].workspace, "ws_override");
+  assert.equal(seen[1].body.include_content, false);
+  assert.deepEqual(seen[1].body.headers, { Authorization: "Bearer x" });
+  assert.equal(seen[2].url, `${DEFAULT_API_BASE_URL}/broadcast/destinations/bdst_1/test`);
+});
+
+test("status helper fetches public status JSON outside /v1", async () => {
+  let seenUrl;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (url) => {
+      seenUrl = url;
+      return jsonResponse(200, { status: "ok" });
+    },
+  });
+  const status = await c.status("https://status.example/status.json");
+  assert.equal(seenUrl, "https://status.example/status.json");
+  assert.equal(status.status, "ok");
+});
+
 // ---- User-Agent --------------------------------------------------------
 
 test("User-Agent header is sent on every request", async () => {

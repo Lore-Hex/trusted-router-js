@@ -1,6 +1,7 @@
 export declare const VERSION: string;
 export declare const DEFAULT_API_BASE_URL: "https://api.quillrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
+export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const REGION_HOSTS: Readonly<Record<string, string>>;
 
@@ -117,6 +118,42 @@ export interface MessagesRequest extends PerCallOptions {
   [extra: string]: unknown;
 }
 
+export interface ResponsesRequest extends PerCallOptions {
+  model?: string;
+  input: string | Array<Record<string, unknown>>;
+  instructions?: string | null;
+  [extra: string]: unknown;
+}
+
+export interface ResponseObject {
+  id: string;
+  object: "response";
+  created_at?: number;
+  status?: string;
+  model?: string | null;
+  output?: Array<Record<string, unknown>>;
+  usage?: Record<string, unknown> | null;
+  [extra: string]: unknown;
+}
+
+export interface ResponseInputTokens {
+  input_tokens: number;
+  total_tokens?: number | null;
+  [extra: string]: unknown;
+}
+
+export interface BroadcastDestinationRequest {
+  type: "posthog" | "webhook" | string;
+  name?: string;
+  endpoint?: string | null;
+  enabled?: boolean;
+  includeContent?: boolean;
+  method?: "POST" | "PUT";
+  headers?: Record<string, string> | null;
+  apiKey?: string | null;
+  workspaceId?: string | null;
+}
+
 export interface BillingCheckoutRequest extends PerCallOptions {
   amount: string | number;
   paymentMethod?: string | null;
@@ -148,6 +185,17 @@ export declare class TrustedRouter {
   credits(options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
   embeddings(req: EmbeddingsRequest): Promise<Record<string, unknown>>;
   messages(req: MessagesRequest): Promise<Record<string, unknown>>;
+  responses(req: ResponsesRequest): Promise<ResponseObject>;
+  responsesEvents(req: ResponsesRequest): AsyncIterable<Record<string, unknown>>;
+  responsesRawStream(req: ResponsesRequest): AsyncIterable<Uint8Array>;
+  responsesInputTokens(req: ResponsesRequest): Promise<ResponseInputTokens>;
+  broadcastDestinations(options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  createBroadcastDestination(req: BroadcastDestinationRequest): Promise<Record<string, unknown>>;
+  getBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  updateBroadcastDestination(id: string, patch?: Record<string, unknown> & { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  deleteBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  testBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  status(url?: string): Promise<Record<string, unknown>>;
 
   billingCheckout(req: BillingCheckoutRequest): Promise<Record<string, unknown>>;
   stablecoinCheckout(req: Omit<BillingCheckoutRequest, "paymentMethod">): Promise<Record<string, unknown>>;

@@ -17,6 +17,7 @@ export const VERSION = "0.3.0";
 export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
+export const DEFAULT_STATUS_URL = "https://status.trustedrouter.com/status.json";
 export const AUTO_MODEL = "trustedrouter/auto";
 
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
@@ -384,6 +385,149 @@ export class TrustedRouter {
     });
   }
 
+  responses({
+    model = AUTO_MODEL,
+    input,
+    instructions = null,
+    apiKey = null,
+    extraHeaders = null,
+    idempotencyKey = null,
+    workspaceId = null,
+    timeout = null,
+    ...params
+  } = {}) {
+    return this.request("POST", "/responses", {
+      body: responsesBody({ model, input, instructions, stream: false, params }),
+      apiKey,
+      extraHeaders,
+      idempotencyKey,
+      workspaceId,
+      timeout,
+    });
+  }
+
+  async *responsesEvents({
+    model = AUTO_MODEL,
+    input,
+    instructions = null,
+    apiKey = null,
+    extraHeaders = null,
+    idempotencyKey = null,
+    workspaceId = null,
+    timeout = null,
+    ...params
+  } = {}) {
+    const response = await this.rawRequest("POST", "/responses", {
+      headers: { accept: "text/event-stream" },
+      body: responsesBody({ model, input, instructions, stream: true, params }),
+      apiKey,
+      extraHeaders,
+      idempotencyKey,
+      workspaceId,
+      timeout,
+    });
+    if (!response.ok) {
+      await throwFromResponse(response);
+    }
+    yield* iterSseEvents(response);
+  }
+
+  async *responsesRawStream({
+    model = AUTO_MODEL,
+    input,
+    instructions = null,
+    apiKey = null,
+    extraHeaders = null,
+    idempotencyKey = null,
+    workspaceId = null,
+    timeout = null,
+    ...params
+  } = {}) {
+    const response = await this.rawRequest("POST", "/responses", {
+      headers: { accept: "text/event-stream" },
+      body: responsesBody({ model, input, instructions, stream: true, params }),
+      apiKey,
+      extraHeaders,
+      idempotencyKey,
+      workspaceId,
+      timeout,
+    });
+    if (!response.ok) {
+      await throwFromResponse(response);
+    }
+    for await (const chunk of response.body) {
+      yield chunk;
+    }
+  }
+
+  responsesInputTokens({
+    model = AUTO_MODEL,
+    input,
+    instructions = null,
+    workspaceId = null,
+    ...params
+  } = {}) {
+    return this.request("POST", "/responses/input_tokens", {
+      body: responsesBody({ model, input, instructions, stream: false, params }),
+      workspaceId,
+    });
+  }
+
+  broadcastDestinations({ workspaceId = null } = {}) {
+    return this.request("GET", "/broadcast/destinations", { workspaceId });
+  }
+
+  createBroadcastDestination({
+    type,
+    name = "Broadcast destination",
+    endpoint = null,
+    enabled = true,
+    includeContent = false,
+    method = "POST",
+    headers = null,
+    apiKey = null,
+    workspaceId = null,
+  } = {}) {
+    return this.request("POST", "/broadcast/destinations", {
+      body: broadcastDestinationBody({
+        type,
+        name,
+        endpoint,
+        enabled,
+        includeContent,
+        method,
+        headers,
+        apiKey,
+      }),
+      workspaceId,
+    });
+  }
+
+  getBroadcastDestination(id, { workspaceId = null } = {}) {
+    return this.request("GET", `/broadcast/destinations/${id}`, { workspaceId });
+  }
+
+  updateBroadcastDestination(id, { workspaceId = null, ...patch } = {}) {
+    return this.request("PATCH", `/broadcast/destinations/${id}`, {
+      body: Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+      workspaceId,
+    });
+  }
+
+  deleteBroadcastDestination(id, { workspaceId = null } = {}) {
+    return this.request("DELETE", `/broadcast/destinations/${id}`, { workspaceId });
+  }
+
+  testBroadcastDestination(id, { workspaceId = null } = {}) {
+    return this.request("POST", `/broadcast/destinations/${id}/test`, { workspaceId });
+  }
+
+  async status(url = DEFAULT_STATUS_URL) {
+    return jsonOrThrow(await this.fetch(url, {
+      headers: { "user-agent": DEFAULT_USER_AGENT },
+    }));
+  }
+
   // ---- billing + auth -------------------------------------------------
 
   billingCheckout({
@@ -520,11 +664,104 @@ async function* iterSseChunks(response) {
   }
 }
 
+async function* iterSseEvents(response) {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let frame = [];
+  for await (const chunk of response.body) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (line === "") {
+        const parsed = parseSseFrame(frame);
+        frame = [];
+        if (parsed !== null) yield parsed;
+      } else {
+        frame.push(line);
+      }
+    }
+  }
+  buffer += decoder.decode();
+  for (const line of buffer.split(/\r?\n/)) {
+    if (line === "") {
+      const parsed = parseSseFrame(frame);
+      frame = [];
+      if (parsed !== null) yield parsed;
+    } else if (line) {
+      frame.push(line);
+    }
+  }
+  const parsed = parseSseFrame(frame);
+  if (parsed !== null) yield parsed;
+}
+
 function parseSseLine(line) {
   if (!line.startsWith("data:")) return null;
   const data = line.slice(5).trim();
   if (!data || data === "[DONE]") return null;
   try { return JSON.parse(data); } catch { return null; }
+}
+
+function parseSseFrame(lines) {
+  if (!lines.length) return null;
+  let event = null;
+  const dataParts = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataParts.push(line.slice(5).trim());
+    }
+  }
+  const data = dataParts.join("\n").trim();
+  if (!data || data === "[DONE]") return null;
+  let payload;
+  try {
+    payload = JSON.parse(data);
+  } catch {
+    payload = { data };
+  }
+  if (event && payload && typeof payload === "object" && !Object.hasOwn(payload, "event")) {
+    return { event, ...payload };
+  }
+  return payload && typeof payload === "object" ? payload : { event, data: payload };
+}
+
+function responsesBody({ model, input, instructions, stream, params }) {
+  const body = { model, input, ...params, stream };
+  delete body.apiKey;
+  delete body.extraHeaders;
+  delete body.idempotencyKey;
+  delete body.timeout;
+  delete body.workspaceId;
+  if (instructions !== null && instructions !== undefined) {
+    body.instructions = instructions;
+  }
+  return body;
+}
+
+function broadcastDestinationBody({
+  type,
+  name,
+  endpoint,
+  enabled,
+  includeContent,
+  method,
+  headers,
+  apiKey,
+}) {
+  const body = {
+    type,
+    name,
+    enabled,
+    include_content: includeContent,
+    method,
+  };
+  if (endpoint !== null && endpoint !== undefined) body.endpoint = endpoint;
+  if (headers !== null && headers !== undefined) body.headers = headers;
+  if (apiKey !== null && apiKey !== undefined) body.api_key = apiKey;
+  return body;
 }
 
 function errorMessage(payload) {
