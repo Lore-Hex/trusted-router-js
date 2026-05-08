@@ -427,6 +427,42 @@ test("responsesEvents parses Responses SSE event names", async () => {
   assert.equal(events[1].delta, "pong");
 });
 
+test("responsesRawStream sends workspaceId as header and yields raw SSE bytes", async () => {
+  let seen;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    workspaceId: "ws_default",
+    fetchImpl: async (_url, init) => {
+      seen = {
+        workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        body: JSON.parse(init.body),
+      };
+      return sseResponse(
+        "event: response.output_text.delta\n" +
+        'data: {"type":"response.output_text.delta","delta":"pong"}\n\n' +
+        "data: [DONE]\n\n",
+      );
+    },
+    maxRetries: 0,
+  });
+  const chunks = [];
+  for await (const chunk of c.responsesRawStream({
+    input: "ping",
+    workspaceId: "ws_override",
+    metadata: { route: "smoke" },
+  })) {
+    chunks.push(chunk);
+  }
+  const assembled = new TextDecoder().decode(
+    new Uint8Array(chunks.flatMap((chunk) => Array.from(chunk))),
+  );
+  assert.equal(seen.workspace, "ws_override");
+  assert.equal(seen.body.stream, true);
+  assert.equal("workspaceId" in seen.body, false);
+  assert.match(assembled, /response\.output_text\.delta/);
+  assert.match(assembled, /\[DONE\]/);
+});
+
 test("responsesInputTokens calls the OpenAI-compatible token endpoint", async () => {
   let url;
   const c = new TrustedRouter({
@@ -474,6 +510,31 @@ test("broadcast helpers send workspaceId header and destination body", async () 
   assert.equal(seen[2].url, `${DEFAULT_API_BASE_URL}/broadcast/destinations/bdst_1/test`);
 });
 
+test("posthog broadcast destination sends project token in body only", async () => {
+  let seen;
+  const c = new TrustedRouter({
+    apiKey: "trustedrouter-management-key",
+    fetchImpl: async (_url, init) => {
+      seen = {
+        authorization: new Headers(init.headers).get("authorization"),
+        body: JSON.parse(init.body),
+      };
+      return jsonResponse(200, { data: { id: "bdst_posthog" } });
+    },
+  });
+  await c.createBroadcastDestination({
+    type: "posthog",
+    name: "PostHog",
+    endpoint: "https://us.i.posthog.com",
+    apiKey: "phc_project_token",
+    includeContent: true,
+  });
+  assert.equal(seen.authorization, "Bearer trustedrouter-management-key");
+  assert.equal(seen.body.api_key, "phc_project_token");
+  assert.equal(seen.body.include_content, true);
+  assert.equal("apiKey" in seen.body, false);
+});
+
 test("status helper fetches public status JSON outside /v1", async () => {
   let seenUrl;
   const c = new TrustedRouter({
@@ -486,6 +547,18 @@ test("status helper fetches public status JSON outside /v1", async () => {
   const status = await c.status("https://status.example/status.json");
   assert.equal(seenUrl, "https://status.example/status.json");
   assert.equal(status.status, "ok");
+});
+
+test("status helper raises typed errors for unavailable status JSON", async () => {
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async () => jsonResponse(503, { error: { message: "status unavailable" } }),
+    maxRetries: 0,
+  });
+  await assert.rejects(
+    c.status("https://status.example/status.json"),
+    (err) => err instanceof InternalError && err.message === "status unavailable",
+  );
 });
 
 // ---- User-Agent --------------------------------------------------------
