@@ -234,6 +234,7 @@ test("chat workspaceId override is header and not request body", async () => {
     fetchImpl: async (_url, init) => {
       seen.push({
         workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        idempotencyKey: new Headers(init.headers).get("idempotency-key"),
         body: JSON.parse(init.body),
       });
       return sseResponse(
@@ -253,8 +254,10 @@ test("chat workspaceId override is header and not request body", async () => {
     // exhaust stream
   }
   assert.equal(seen[0].workspace, "ws_override");
+  assert.match(seen[0].idempotencyKey, /^tr-req-/);
   assert.equal("workspaceId" in seen[0].body, false);
   assert.equal(seen[1].workspace, "ws_default");
+  assert.match(seen[1].idempotencyKey, /^tr-req-/);
   assert.equal("workspaceId" in seen[1].body, false);
 });
 
@@ -269,6 +272,30 @@ test("idempotencyKey is sent on billingCheckout", async () => {
   });
   await c.billingCheckout({ amount: 25, idempotencyKey: "key-123" });
   assert.equal(seen.get("idempotency-key"), "key-123");
+});
+
+test("chat preserves explicit idempotencyKey and keeps it out of the body", async () => {
+  let seen;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (_url, init) => {
+      seen = {
+        idempotencyKey: new Headers(init.headers).get("idempotency-key"),
+        body: JSON.parse(init.body),
+      };
+      return sseResponse(
+        'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n",
+      );
+    },
+    maxRetries: 0,
+  });
+  await c.chatCompletions({
+    messages: [{ role: "user", content: "hi" }],
+    idempotencyKey: "caller-idem-1",
+  });
+  assert.equal(seen.idempotencyKey, "caller-idem-1");
+  assert.equal("idempotencyKey" in seen.body, false);
 });
 
 test("per-call apiKey overrides instance key without mutation", async () => {
@@ -379,6 +406,7 @@ test("responses: sends workspaceId as header and not request body", async () => 
     fetchImpl: async (_url, init) => {
       seen = {
         workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        idempotencyKey: new Headers(init.headers).get("idempotency-key"),
         body: JSON.parse(init.body),
       };
       return jsonResponse(200, {
@@ -397,6 +425,7 @@ test("responses: sends workspaceId as header and not request body", async () => 
   });
   assert.equal(response.id, "resp_1");
   assert.equal(seen.workspace, "ws_override");
+  assert.match(seen.idempotencyKey, /^tr-req-/);
   assert.equal(seen.body.model, AUTO_MODEL);
   assert.equal(seen.body.input, "ping");
   assert.equal(seen.body.stream, false);
@@ -435,6 +464,7 @@ test("responsesRawStream sends workspaceId as header and yields raw SSE bytes", 
     fetchImpl: async (_url, init) => {
       seen = {
         workspace: new Headers(init.headers).get("x-trustedrouter-workspace"),
+        idempotencyKey: new Headers(init.headers).get("idempotency-key"),
         body: JSON.parse(init.body),
       };
       return sseResponse(
@@ -457,6 +487,7 @@ test("responsesRawStream sends workspaceId as header and yields raw SSE bytes", 
     new Uint8Array(chunks.flatMap((chunk) => Array.from(chunk))),
   );
   assert.equal(seen.workspace, "ws_override");
+  assert.match(seen.idempotencyKey, /^tr-req-/);
   assert.equal(seen.body.stream, true);
   assert.equal("workspaceId" in seen.body, false);
   assert.match(assembled, /response\.output_text\.delta/);

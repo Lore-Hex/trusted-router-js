@@ -70,9 +70,17 @@ test("defaults chat to trustedrouter auto and exposes region/provider helpers", 
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",
     fetchImpl: async (url, init) => {
-      calls.push({ url, init, body: init.body ? JSON.parse(init.body) : undefined });
+      calls.push({
+        url,
+        init,
+        body: init.body ? JSON.parse(init.body) : undefined,
+      });
       if (url.endsWith("/regions")) {
-        return new Response(JSON.stringify({ data: [{ id: "us-central1" }, { id: "europe-west4" }] }));
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "us-central1" }, { id: "europe-west4" }],
+          }),
+        );
       }
       if (url.endsWith("/providers")) {
         return new Response(JSON.stringify({ data: [{ id: "vertex" }] }));
@@ -82,7 +90,9 @@ test("defaults chat to trustedrouter auto and exposes region/provider helpers", 
   });
 
   assert.equal(AUTO_MODEL, "trustedrouter/auto");
-  await client.chatCompletions({ messages: [{ role: "user", content: "hello" }] });
+  await client.chatCompletions({
+    messages: [{ role: "user", content: "hello" }],
+  });
   assert.equal(calls[0].body.model, AUTO_MODEL);
   assert.equal((await client.regions()).data[1].id, "europe-west4");
   assert.equal((await client.providers()).data[0].id, "vertex");
@@ -93,7 +103,11 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
   const client = new TrustedRouter({
     apiKey: "session",
     fetchImpl: async (url, init) => {
-      calls.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined });
+      calls.push({
+        url,
+        method: init.method,
+        body: init.body ? JSON.parse(init.body) : undefined,
+      });
       return new Response(JSON.stringify({ data: { ok: true } }));
     },
   });
@@ -139,4 +153,73 @@ test("chatCompletionsText yields parsed SSE text deltas", async () => {
     tokens.push(token);
   }
   assert.deepEqual(tokens, ["hel", "lo"]);
+});
+
+test("request fails over to regional endpoint on 503", async () => {
+  const hosts = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    maxRetries: 1,
+    regionalFailover: true,
+    failoverRegions: ["europe-west4"],
+    fetchImpl: async (url) => {
+      hosts.push(new URL(url).host);
+      if (hosts.length === 1) {
+        return new Response(JSON.stringify({ error: { message: "down" } }), {
+          status: 503,
+          headers: { "content-type": "application/json", "retry-after": "0" },
+        });
+      }
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(await client.models(), { data: [] });
+  assert.deepEqual(hosts, [
+    "api.quillrouter.com",
+    "api-europe-west4.quillrouter.com",
+  ]);
+});
+
+test("streaming rawRequest fails over before returning error response", async () => {
+  const hosts = [];
+  const idempotencyKeys = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    maxRetries: 1,
+    regionalFailover: true,
+    failoverRegions: ["europe-west4"],
+    fetchImpl: async (url, init) => {
+      hosts.push(new URL(url).host);
+      idempotencyKeys.push(new Headers(init.headers).get("idempotency-key"));
+      if (hosts.length === 1) {
+        return new Response("regional gateway unavailable", { status: 503 });
+      }
+      return new Response(
+        'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
+    },
+  });
+
+  const tokens = [];
+  for await (const token of client.chatCompletionsText({
+    messages: [{ role: "user", content: "hi" }],
+  })) {
+    tokens.push(token);
+  }
+
+  assert.deepEqual(tokens, ["OK"]);
+  assert.deepEqual(hosts, [
+    "api.quillrouter.com",
+    "api-europe-west4.quillrouter.com",
+  ]);
+  assert.match(idempotencyKeys[0], /^tr-req-/);
+  assert.deepEqual(idempotencyKeys, [idempotencyKeys[0], idempotencyKeys[0]]);
 });

@@ -1,5 +1,12 @@
 # TrustedRouter JavaScript SDK
 
+[![npm version](https://img.shields.io/npm/v/@lore-hex/trusted-router?logo=npm)](https://www.npmjs.com/package/@lore-hex/trusted-router)
+[![npm downloads](https://img.shields.io/npm/dm/@lore-hex/trusted-router?logo=npm)](https://www.npmjs.com/package/@lore-hex/trusted-router)
+[![CI](https://github.com/Lore-Hex/trusted-router-js/actions/workflows/ci.yml/badge.svg)](https://github.com/Lore-Hex/trusted-router-js/actions/workflows/ci.yml)
+[![TypeScript types](https://img.shields.io/badge/types-included-3178c6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/@lore-hex/trusted-router)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Verifiable trust](https://img.shields.io/badge/trust-attested-16a34a)](https://trust.trustedrouter.com)
+
 OpenAI-compatible JS/TS client for [TrustedRouter](https://trustedrouter.com) —
 the hosted, attested LLM router that lets you point one OpenAI-shaped client
 at every provider (Anthropic, OpenAI, Google Vertex, Gemini, DeepSeek,

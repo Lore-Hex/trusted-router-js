@@ -17,20 +17,29 @@ export const VERSION = "0.3.0";
 export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
-export const DEFAULT_STATUS_URL = "https://status.trustedrouter.com/status.json";
+export const DEFAULT_STATUS_URL =
+  "https://status.trustedrouter.com/status.json";
 export const AUTO_MODEL = "trustedrouter/auto";
 
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
 // aliases the apex because the regional subdomain isn't published yet.
 export const REGION_HOSTS = Object.freeze({
   "us-central1": "api.quillrouter.com",
+  "us-east4": "api-us-east4.quillrouter.com",
   "europe-west4": "api-europe-west4.quillrouter.com",
 });
+export const DEFAULT_FAILOVER_REGIONS = Object.freeze([
+  "us-central1",
+  "us-east4",
+  "europe-west4",
+]);
 
 export function regionBaseUrl(region) {
   if (!Object.hasOwn(REGION_HOSTS, region)) {
     const known = Object.keys(REGION_HOSTS).sort().join(", ");
-    throw new Error(`unknown TrustedRouter region '${region}'; known: ${known}`);
+    throw new Error(
+      `unknown TrustedRouter region '${region}'; known: ${known}`,
+    );
   }
   return `https://${REGION_HOSTS[region]}/v1`;
 }
@@ -97,12 +106,18 @@ export class InternalError extends TrustedRouterError {
 }
 
 function classifyError(statusCode, message, payload, retryAfter) {
-  if (statusCode === 401) return new AuthenticationError(statusCode, message, payload);
-  if (statusCode === 403) return new PermissionDeniedError(statusCode, message, payload);
-  if (statusCode === 404) return new NotFoundError(statusCode, message, payload);
-  if (statusCode === 429) return new RateLimitError(statusCode, message, payload, retryAfter);
-  if (statusCode === 501) return new EndpointNotSupportedError(statusCode, message, payload);
-  if (statusCode >= 400 && statusCode < 500) return new BadRequestError(statusCode, message, payload);
+  if (statusCode === 401)
+    return new AuthenticationError(statusCode, message, payload);
+  if (statusCode === 403)
+    return new PermissionDeniedError(statusCode, message, payload);
+  if (statusCode === 404)
+    return new NotFoundError(statusCode, message, payload);
+  if (statusCode === 429)
+    return new RateLimitError(statusCode, message, payload, retryAfter);
+  if (statusCode === 501)
+    return new EndpointNotSupportedError(statusCode, message, payload);
+  if (statusCode >= 400 && statusCode < 500)
+    return new BadRequestError(statusCode, message, payload);
   if (statusCode >= 500) return new InternalError(statusCode, message, payload);
   return new TrustedRouterError(statusCode, message, payload);
 }
@@ -120,6 +135,30 @@ function isRetryable(statusCode) {
   return statusCode === 429 || statusCode >= 500;
 }
 
+function isRegionalFailoverable(statusCode) {
+  return statusCode === 502 || statusCode === 503 || statusCode === 504;
+}
+
+function regionalBaseUrls(primaryBaseUrl, enabled, failoverRegions = null) {
+  const urls = [primaryBaseUrl.replace(/\/+$/, "")];
+  if (!enabled) return urls;
+  for (const region of failoverRegions ?? DEFAULT_FAILOVER_REGIONS) {
+    const candidate = regionBaseUrl(region).replace(/\/+$/, "");
+    if (!urls.includes(candidate)) urls.push(candidate);
+  }
+  return urls;
+}
+
+function transportError(error) {
+  const message =
+    error && typeof error.message === "string" ? error.message : String(error);
+  return new InternalError(
+    503,
+    `TrustedRouter regional endpoint unavailable: ${message}`,
+    null,
+  );
+}
+
 function retrySleepMs(attempt, retryAfterSeconds) {
   // Exponential backoff with full jitter, capped at 30s. Honor
   // retry-after as a floor.
@@ -131,12 +170,21 @@ function retrySleepMs(attempt, retryAfterSeconds) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function newIdempotencyKey() {
+  if (globalThis.crypto?.randomUUID) {
+    return `tr-req-${globalThis.crypto.randomUUID()}`;
+  }
+  const suffix = Math.random().toString(36).slice(2);
+  return `tr-req-${Date.now().toString(36)}-${suffix}`;
+}
+
 // ---- user agent --------------------------------------------------------
 
 function userAgent() {
-  const node = typeof process !== "undefined" && process.versions?.node
-    ? `node/${process.versions.node}`
-    : "browser";
+  const node =
+    typeof process !== "undefined" && process.versions?.node
+      ? `node/${process.versions.node}`
+      : "browser";
   const platform = typeof process !== "undefined" ? process.platform : "web";
   return `trusted-router-js/${VERSION} ${node} ${platform}`;
 }
@@ -154,10 +202,13 @@ export class TrustedRouter {
     headers = {},
     workspaceId = null,
     maxRetries = 2,
+    regionalFailover = null,
+    failoverRegions = null,
   } = {}) {
     if (!fetchImpl) {
       throw new Error("A fetch implementation is required");
     }
+    const explicitEndpoint = Boolean(region || baseUrl);
     if (region && baseUrl) {
       throw new Error("pass region OR baseUrl, not both");
     }
@@ -174,6 +225,13 @@ export class TrustedRouter {
     this.fetch = fetchImpl;
     this.defaultHeaders = headers;
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
+    const failoverEnabled =
+      regionalFailover === null ? !explicitEndpoint : Boolean(regionalFailover);
+    this.baseUrls = regionalBaseUrls(
+      this.baseUrl,
+      failoverEnabled,
+      failoverRegions,
+    );
   }
 
   // ---- core request loop ----------------------------------------------
@@ -190,25 +248,56 @@ export class TrustedRouter {
       ...rest
     } = init;
 
-    const url = `${this.baseUrl}/${String(path).replace(/^\/+/, "")}`;
-    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId });
+    const requestHeaders = this._buildHeaders({
+      headers,
+      extraHeaders,
+      idempotencyKey,
+      apiKey,
+      workspaceId,
+    });
     const requestBody = serializeBody(body, requestHeaders);
 
     let attempt = 0;
+    let baseIndex = 0;
     while (true) {
-      const response = await this._fetchWithTimeout(url, {
-        method,
-        headers: requestHeaders,
-        body: requestBody,
-        ...rest,
-      }, timeout);
+      const url = `${this.baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      let response;
+      try {
+        response = await this._fetchWithTimeout(
+          url,
+          {
+            method,
+            headers: requestHeaders,
+            body: requestBody,
+            ...rest,
+          },
+          timeout,
+        );
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        if (attempt >= this.maxRetries) throw transportError(error);
+        if (baseIndex < this.baseUrls.length - 1) baseIndex += 1;
+        await sleep(retrySleepMs(attempt, null));
+        attempt += 1;
+        continue;
+      }
 
       if (attempt >= this.maxRetries || !isRetryable(response.status)) {
         return jsonOrThrow(response);
       }
+      if (
+        isRegionalFailoverable(response.status) &&
+        baseIndex < this.baseUrls.length - 1
+      ) {
+        baseIndex += 1;
+      }
       const retryAfter = parseRetryAfter(response.headers);
       // Drain the response so we don't leak a connection while sleeping.
-      try { await response.text(); } catch { /* ignore */ }
+      try {
+        await response.text();
+      } catch {
+        /* ignore */
+      }
       await sleep(retrySleepMs(attempt, retryAfter));
       attempt += 1;
     }
@@ -230,22 +319,70 @@ export class TrustedRouter {
       workspaceId = null,
       ...rest
     } = init;
-    const url = `${this.baseUrl}/${String(path).replace(/^\/+/, "")}`;
-    const requestHeaders = this._buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId });
+    const requestHeaders = this._buildHeaders({
+      headers,
+      extraHeaders,
+      idempotencyKey,
+      apiKey,
+      workspaceId,
+    });
     const requestBody = serializeBody(body, requestHeaders);
-    return this._fetchWithTimeout(url, {
-      method,
-      headers: requestHeaders,
-      body: requestBody,
-      ...rest,
-    }, timeout);
+    let attempt = 0;
+    let baseIndex = 0;
+    while (true) {
+      const url = `${this.baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      let response;
+      try {
+        response = await this._fetchWithTimeout(
+          url,
+          {
+            method,
+            headers: requestHeaders,
+            body: requestBody,
+            ...rest,
+          },
+          timeout,
+        );
+      } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        if (attempt >= this.maxRetries) throw transportError(error);
+        if (baseIndex < this.baseUrls.length - 1) baseIndex += 1;
+        await sleep(retrySleepMs(attempt, null));
+        attempt += 1;
+        continue;
+      }
+      if (
+        attempt >= this.maxRetries ||
+        !isRegionalFailoverable(response.status) ||
+        baseIndex >= this.baseUrls.length - 1
+      ) {
+        return response;
+      }
+      try {
+        await response.text();
+      } catch {
+        /* ignore */
+      }
+      baseIndex += 1;
+      await sleep(retrySleepMs(attempt, parseRetryAfter(response.headers)));
+      attempt += 1;
+    }
   }
 
-  _buildHeaders({ headers, extraHeaders, idempotencyKey, apiKey, workspaceId }) {
+  _buildHeaders({
+    headers,
+    extraHeaders,
+    idempotencyKey,
+    apiKey,
+    workspaceId,
+  }) {
     const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
     for (const [k, v] of Object.entries(this.defaultHeaders)) out.set(k, v);
     if (headers) {
-      const it = headers instanceof Headers ? headers.entries() : Object.entries(headers);
+      const it =
+        headers instanceof Headers
+          ? headers.entries()
+          : Object.entries(headers);
       for (const [k, v] of it) out.set(k, v);
     }
     if (extraHeaders) {
@@ -253,7 +390,8 @@ export class TrustedRouter {
     }
     if (idempotencyKey) out.set("idempotency-key", idempotencyKey);
     const selectedWorkspaceId = workspaceId ?? this.workspaceId;
-    if (selectedWorkspaceId) out.set("x-trustedrouter-workspace", selectedWorkspaceId);
+    if (selectedWorkspaceId)
+      out.set("x-trustedrouter-workspace", selectedWorkspaceId);
     const bearer = apiKey ?? this.apiKey;
     if (bearer && !out.has("authorization")) {
       out.set("authorization", `Bearer ${bearer}`);
@@ -291,7 +429,14 @@ export class TrustedRouter {
     // still get a single result back.
     const chunks = [];
     for await (const chunk of this.chatCompletionsChunks({
-      model, messages, apiKey, extraHeaders, idempotencyKey, workspaceId, timeout, ...params,
+      model,
+      messages,
+      apiKey,
+      extraHeaders,
+      idempotencyKey,
+      workspaceId,
+      timeout,
+      ...params,
     })) {
       chunks.push(chunk);
     }
@@ -309,12 +454,13 @@ export class TrustedRouter {
     timeout = null,
     ...params
   } = {}) {
+    const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
       body: { model, messages, stream: true, ...params },
       apiKey,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
     });
@@ -345,12 +491,13 @@ export class TrustedRouter {
     timeout = null,
     ...params
   } = {}) {
+    const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
       body: { model, messages, stream: true, ...params },
       apiKey,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
     });
@@ -364,14 +511,26 @@ export class TrustedRouter {
 
   // ---- catalog / metadata ---------------------------------------------
 
-  models() { return this.request("GET", "/models"); }
-  providers() { return this.request("GET", "/providers"); }
-  regions() { return this.request("GET", "/regions"); }
+  models() {
+    return this.request("GET", "/models");
+  }
+  providers() {
+    return this.request("GET", "/providers");
+  }
+  regions() {
+    return this.request("GET", "/regions");
+  }
   credits({ workspaceId = null } = {}) {
     return this.request("GET", "/credits", { workspaceId });
   }
 
-  embeddings({ model, input, encodingFormat = null, dimensions = null, user = null }) {
+  embeddings({
+    model,
+    input,
+    encodingFormat = null,
+    dimensions = null,
+    user = null,
+  }) {
     const body = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
     if (dimensions !== null) body.dimensions = dimensions;
@@ -396,11 +555,18 @@ export class TrustedRouter {
     timeout = null,
     ...params
   } = {}) {
+    const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     return this.request("POST", "/responses", {
-      body: responsesBody({ model, input, instructions, stream: false, params }),
+      body: responsesBody({
+        model,
+        input,
+        instructions,
+        stream: false,
+        params,
+      }),
       apiKey,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
     });
@@ -417,12 +583,13 @@ export class TrustedRouter {
     timeout = null,
     ...params
   } = {}) {
+    const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
       body: responsesBody({ model, input, instructions, stream: true, params }),
       apiKey,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
     });
@@ -443,12 +610,13 @@ export class TrustedRouter {
     timeout = null,
     ...params
   } = {}) {
+    const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
       body: responsesBody({ model, input, instructions, stream: true, params }),
       apiKey,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
     });
@@ -468,7 +636,13 @@ export class TrustedRouter {
     ...params
   } = {}) {
     return this.request("POST", "/responses/input_tokens", {
-      body: responsesBody({ model, input, instructions, stream: false, params }),
+      body: responsesBody({
+        model,
+        input,
+        instructions,
+        stream: false,
+        params,
+      }),
       workspaceId,
     });
   }
@@ -504,50 +678,76 @@ export class TrustedRouter {
   }
 
   getBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("GET", `/broadcast/destinations/${id}`, { workspaceId });
+    return this.request("GET", `/broadcast/destinations/${id}`, {
+      workspaceId,
+    });
   }
 
   updateBroadcastDestination(id, { workspaceId = null, ...patch } = {}) {
     return this.request("PATCH", `/broadcast/destinations/${id}`, {
-      body: Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)),
+      body: Object.fromEntries(
+        Object.entries(patch).filter(([, value]) => value !== undefined),
+      ),
       workspaceId,
     });
   }
 
   deleteBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("DELETE", `/broadcast/destinations/${id}`, { workspaceId });
+    return this.request("DELETE", `/broadcast/destinations/${id}`, {
+      workspaceId,
+    });
   }
 
   testBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("POST", `/broadcast/destinations/${id}/test`, { workspaceId });
+    return this.request("POST", `/broadcast/destinations/${id}/test`, {
+      workspaceId,
+    });
   }
 
   async status(url = DEFAULT_STATUS_URL) {
-    return jsonOrThrow(await this.fetch(url, {
-      headers: { "user-agent": DEFAULT_USER_AGENT },
-    }));
+    return jsonOrThrow(
+      await this.fetch(url, {
+        headers: { "user-agent": DEFAULT_USER_AGENT },
+      }),
+    );
   }
 
   // ---- billing + auth -------------------------------------------------
 
   billingCheckout({
-    amount, paymentMethod = null, workspaceId = null,
-    successUrl = null, cancelUrl = null, idempotencyKey = null,
+    amount,
+    paymentMethod = null,
+    workspaceId = null,
+    successUrl = null,
+    cancelUrl = null,
+    idempotencyKey = null,
   } = {}) {
     const body = { amount };
     if (paymentMethod !== null) body.payment_method = paymentMethod;
     if (workspaceId !== null) body.workspace_id = workspaceId;
     if (successUrl !== null) body.success_url = successUrl;
     if (cancelUrl !== null) body.cancel_url = cancelUrl;
-    return this.request("POST", "/billing/checkout", { body, idempotencyKey, workspaceId });
+    return this.request("POST", "/billing/checkout", {
+      body,
+      idempotencyKey,
+      workspaceId,
+    });
   }
 
   stablecoinCheckout({ amount, ...params } = {}) {
-    return this.billingCheckout({ amount, paymentMethod: "stablecoin", ...params });
+    return this.billingCheckout({
+      amount,
+      paymentMethod: "stablecoin",
+      ...params,
+    });
   }
 
-  authSession() { return this.request("GET", "/auth/session"); }
-  logout() { return this.request("POST", "/auth/logout"); }
+  authSession() {
+    return this.request("GET", "/auth/session");
+  }
+  logout() {
+    return this.request("POST", "/auth/logout");
+  }
 
   activity(params = {}) {
     const query = new URLSearchParams();
@@ -571,7 +771,12 @@ export class TrustedRouter {
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw classifyError(response.status, text.slice(0, 240) || response.statusText, null, parseRetryAfter(response.headers));
+      throw classifyError(
+        response.status,
+        text.slice(0, 240) || response.statusText,
+        null,
+        parseRetryAfter(response.headers),
+      );
     }
     return new Uint8Array(await response.arrayBuffer());
   }
@@ -590,9 +795,11 @@ export async function fetchTrustRelease({
   if (!fetchImpl) {
     throw new Error("A fetch implementation is required");
   }
-  return jsonOrThrow(await fetchImpl(trustUrl, {
-    headers: { "user-agent": DEFAULT_USER_AGENT },
-  }));
+  return jsonOrThrow(
+    await fetchImpl(trustUrl, {
+      headers: { "user-agent": DEFAULT_USER_AGENT },
+    }),
+  );
 }
 
 export const trustRelease = fetchTrustRelease;
@@ -602,8 +809,10 @@ export const trustRelease = fetchTrustRelease;
 function serializeBody(body, headers) {
   if (!body || typeof body === "string") return body;
   if (typeof FormData !== "undefined" && body instanceof FormData) return body;
-  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) return body;
-  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) return body;
+  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
+    return body;
+  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer)
+    return body;
   if (!headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
@@ -635,7 +844,11 @@ async function throwFromResponse(response) {
   const text = await response.text().catch(() => "");
   let payload = null;
   if (text) {
-    try { payload = JSON.parse(text); } catch { payload = { message: text }; }
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { message: text };
+    }
   }
   throw classifyError(
     response.status,
@@ -700,7 +913,11 @@ function parseSseLine(line) {
   if (!line.startsWith("data:")) return null;
   const data = line.slice(5).trim();
   if (!data || data === "[DONE]") return null;
-  try { return JSON.parse(data); } catch { return null; }
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
 }
 
 function parseSseFrame(lines) {
@@ -722,10 +939,17 @@ function parseSseFrame(lines) {
   } catch {
     payload = { data };
   }
-  if (event && payload && typeof payload === "object" && !Object.hasOwn(payload, "event")) {
+  if (
+    event &&
+    payload &&
+    typeof payload === "object" &&
+    !Object.hasOwn(payload, "event")
+  ) {
     return { event, ...payload };
   }
-  return payload && typeof payload === "object" ? payload : { event, data: payload };
+  return payload && typeof payload === "object"
+    ? payload
+    : { event, data: payload };
 }
 
 function responsesBody({ model, input, instructions, stream, params }) {
@@ -784,11 +1008,13 @@ export function collectCompletion(chunks) {
     return {
       id: "",
       object: "chat.completion",
-      choices: [{
-        index: 0,
-        message: { role: "assistant", content: "" },
-        finish_reason: "stop",
-      }],
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: "" },
+          finish_reason: "stop",
+        },
+      ],
     };
   }
   const parts = [];
@@ -806,10 +1032,12 @@ export function collectCompletion(chunks) {
     object: "chat.completion",
     created: last?.created ?? 0,
     model: last?.model ?? "",
-    choices: [{
-      index: 0,
-      message: { role: "assistant", content: parts.join("") },
-      finish_reason: finishReason ?? "stop",
-    }],
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: parts.join("") },
+        finish_reason: finishReason ?? "stop",
+      },
+    ],
   };
 }

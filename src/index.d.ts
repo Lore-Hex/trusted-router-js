@@ -4,6 +4,7 @@ export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const REGION_HOSTS: Readonly<Record<string, string>>;
+export declare const DEFAULT_FAILOVER_REGIONS: ReadonlyArray<string>;
 
 export declare function regionBaseUrl(region: string): string;
 
@@ -21,7 +22,12 @@ export declare class NotFoundError extends TrustedRouterError {}
 export declare class EndpointNotSupportedError extends TrustedRouterError {}
 export declare class RateLimitError extends TrustedRouterError {
   retryAfter: number | null;
-  constructor(statusCode: number, message: string, payload?: unknown, retryAfter?: number | null);
+  constructor(
+    statusCode: number,
+    message: string,
+    payload?: unknown,
+    retryAfter?: number | null,
+  );
 }
 export declare class InternalError extends TrustedRouterError {}
 
@@ -38,6 +44,8 @@ export interface TrustedRouterOptions {
   headers?: Record<string, string>;
   workspaceId?: string | null;
   maxRetries?: number;
+  regionalFailover?: boolean | null;
+  failoverRegions?: string[] | readonly string[] | null;
 }
 
 export interface PerCallOptions {
@@ -49,7 +57,8 @@ export interface PerCallOptions {
   timeout?: number | null;
 }
 
-export interface RequestOptions extends Omit<RequestInit, "headers" | "body">, PerCallOptions {
+export interface RequestOptions
+  extends Omit<RequestInit, "headers" | "body">, PerCallOptions {
   headers?: TrustedRouterHeaders;
   body?: BodyInit | Record<string, unknown> | null;
 }
@@ -169,10 +178,19 @@ export declare class TrustedRouter {
   fetch: TrustedRouterFetch;
   defaultHeaders: Record<string, string>;
   maxRetries: number;
+  baseUrls: string[];
   constructor(options?: TrustedRouterOptions);
 
-  request(method: string, path: string, init?: RequestOptions): Promise<Record<string, unknown>>;
-  rawRequest(method: string, path: string, init?: RequestOptions): Promise<Response>;
+  request(
+    method: string,
+    path: string,
+    init?: RequestOptions,
+  ): Promise<Record<string, unknown>>;
+  rawRequest(
+    method: string,
+    path: string,
+    init?: RequestOptions,
+  ): Promise<Response>;
 
   chatCompletions(req?: ChatRequest): Promise<ChatCompletion>;
   chatCompletionsChunks(req?: ChatRequest): AsyncIterable<ChatCompletionChunk>;
@@ -182,26 +200,52 @@ export declare class TrustedRouter {
   models(): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;
   regions(): Promise<Record<string, unknown>>;
-  credits(options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  credits(options?: {
+    workspaceId?: string | null;
+  }): Promise<Record<string, unknown>>;
   embeddings(req: EmbeddingsRequest): Promise<Record<string, unknown>>;
   messages(req: MessagesRequest): Promise<Record<string, unknown>>;
   responses(req: ResponsesRequest): Promise<ResponseObject>;
-  responsesEvents(req: ResponsesRequest): AsyncIterable<Record<string, unknown>>;
+  responsesEvents(
+    req: ResponsesRequest,
+  ): AsyncIterable<Record<string, unknown>>;
   responsesRawStream(req: ResponsesRequest): AsyncIterable<Uint8Array>;
   responsesInputTokens(req: ResponsesRequest): Promise<ResponseInputTokens>;
-  broadcastDestinations(options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
-  createBroadcastDestination(req: BroadcastDestinationRequest): Promise<Record<string, unknown>>;
-  getBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
-  updateBroadcastDestination(id: string, patch?: Record<string, unknown> & { workspaceId?: string | null }): Promise<Record<string, unknown>>;
-  deleteBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
-  testBroadcastDestination(id: string, options?: { workspaceId?: string | null }): Promise<Record<string, unknown>>;
+  broadcastDestinations(options?: {
+    workspaceId?: string | null;
+  }): Promise<Record<string, unknown>>;
+  createBroadcastDestination(
+    req: BroadcastDestinationRequest,
+  ): Promise<Record<string, unknown>>;
+  getBroadcastDestination(
+    id: string,
+    options?: { workspaceId?: string | null },
+  ): Promise<Record<string, unknown>>;
+  updateBroadcastDestination(
+    id: string,
+    patch?: Record<string, unknown> & { workspaceId?: string | null },
+  ): Promise<Record<string, unknown>>;
+  deleteBroadcastDestination(
+    id: string,
+    options?: { workspaceId?: string | null },
+  ): Promise<Record<string, unknown>>;
+  testBroadcastDestination(
+    id: string,
+    options?: { workspaceId?: string | null },
+  ): Promise<Record<string, unknown>>;
   status(url?: string): Promise<Record<string, unknown>>;
 
-  billingCheckout(req: BillingCheckoutRequest): Promise<Record<string, unknown>>;
-  stablecoinCheckout(req: Omit<BillingCheckoutRequest, "paymentMethod">): Promise<Record<string, unknown>>;
+  billingCheckout(
+    req: BillingCheckoutRequest,
+  ): Promise<Record<string, unknown>>;
+  stablecoinCheckout(
+    req: Omit<BillingCheckoutRequest, "paymentMethod">,
+  ): Promise<Record<string, unknown>>;
   authSession(): Promise<Record<string, unknown>>;
   logout(): Promise<Record<string, unknown>>;
-  activity(params?: Record<string, string | number | boolean | null | undefined>): Promise<Record<string, unknown>>;
+  activity(
+    params?: Record<string, string | number | boolean | null | undefined>,
+  ): Promise<Record<string, unknown>>;
 
   attestation(): Promise<Uint8Array>;
   trustRelease(url?: string): Promise<Record<string, unknown>>;
@@ -214,4 +258,6 @@ export declare function fetchTrustRelease(options?: {
 
 export { fetchTrustRelease as trustRelease };
 
-export declare function collectCompletion(chunks: ChatCompletionChunk[]): ChatCompletion;
+export declare function collectCompletion(
+  chunks: ChatCompletionChunk[],
+): ChatCompletion;
