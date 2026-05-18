@@ -1,0 +1,54 @@
+{
+  "id": "trustedrouter",
+  "name": "TrustedRouter.com",
+  "description": "TrustedRouter.com end-to-end encrypted OpenRouter-compatible LLM router.",
+  "providers": ["trustedrouter"],
+  "modelSupport": {
+    "modelPrefixes": ["trustedrouter/"]
+  },
+  "modelIdNormalization": {
+    "providers": {
+      "trustedrouter": {
+        "prefixWhenBare": "trustedrouter"
+      }
+    }
+  },
+  "providerEndpoints": [
+    {
+      "endpointClass": "openrouter",
+      "hostSuffixes": ["quillrouter.com", "trustedrouter.com"]
+    }
+  ],
+  "providerRequest": {
+    "providers": {
+      "trustedrouter": {
+        "family": "openrouter"
+      }
+    }
+  },
+  "providerAuthEnvVars": {
+    "trustedrouter": ["TRUSTEDROUTER_API_KEY"]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "trustedrouter",
+      "method": "api-key",
+      "choiceId": "trustedrouter-api-key",
+      "choiceLabel": "TrustedRouter.com API key",
+      "choiceHint": "End-to-end encrypted OpenRouter-compatible router",
+      "groupId": "openrouter",
+      "groupLabel": "OpenRouter-compatible routers",
+      "groupHint": "API key",
+      "onboardingScopes": ["text-inference"],
+      "optionKey": "trustedrouterApiKey",
+      "cliFlag": "--trustedrouter-api-key",
+      "cliOption": "--trustedrouter-api-key <key>",
+      "cliDescription": "TrustedRouter.com API key"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
