@@ -206,20 +206,6 @@ await client.request("GET", "/some/new/route", {
 });
 ```
 
-## OpenClaw
-
-The repository includes a ClawHub-publishable OpenClaw provider plugin in
-[`packages/openclaw-provider`](packages/openclaw-provider). It registers
-TrustedRouter.com under the OpenRouter-compatible router onboarding group, uses
-`TRUSTEDROUTER_API_KEY`, and defaults to `trustedrouter/auto`.
-
-After publishing on ClawHub:
-
-```bash
-openclaw plugins install clawhub:@lore-hex/openclaw-trustedrouter-provider
-openclaw onboard --auth-choice trustedrouter-api-key
-```
-
 ## Contributing
 
 ```bash
