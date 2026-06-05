@@ -171,6 +171,49 @@ export interface BillingCheckoutRequest extends PerCallOptions {
   cancelUrl?: string | null;
 }
 
+export interface OAuthPkcePair {
+  codeVerifier: string;
+  codeChallenge: string;
+  codeChallengeMethod: "S256";
+}
+
+export interface OAuthAuthorizeUrlOptions {
+  callbackUrl: string;
+  codeChallenge?: string | null;
+  codeChallengeMethod?: "S256" | "plain" | null;
+  keyLabel?: string | null;
+  limit?: string | number | null;
+  usageLimitType?: "daily" | "weekly" | "monthly" | null;
+  expiresAt?: string | null;
+  spawnAgent?: string | null;
+  spawnCloud?: string | null;
+  state?: string | null;
+}
+
+export interface CreateOAuthAuthorizationOptions
+  extends Omit<OAuthAuthorizeUrlOptions, "codeChallenge" | "codeChallengeMethod" | "state"> {
+  codeVerifier?: string | null;
+  state?: string | null;
+}
+
+export interface OAuthAuthorization extends OAuthPkcePair {
+  state: string | null;
+  url: string;
+}
+
+export interface OAuthKeyExchangeRequest {
+  code: string;
+  codeVerifier?: string | null;
+  codeChallengeMethod?: "S256" | "plain" | null;
+  timeout?: number | null;
+}
+
+export interface OAuthKeyExchangeResponse {
+  key: string;
+  user_id?: string | null;
+  data: Record<string, unknown>;
+}
+
 export declare class TrustedRouter {
   apiKey: string | null;
   baseUrl: string;
@@ -243,6 +286,13 @@ export declare class TrustedRouter {
   ): Promise<Record<string, unknown>>;
   authSession(): Promise<Record<string, unknown>>;
   logout(): Promise<Record<string, unknown>>;
+  oauthAuthorizeUrl(options: OAuthAuthorizeUrlOptions): string;
+  createOAuthAuthorization(
+    options: CreateOAuthAuthorizationOptions,
+  ): Promise<OAuthAuthorization>;
+  exchangeOAuthKey(
+    req: OAuthKeyExchangeRequest,
+  ): Promise<OAuthKeyExchangeResponse>;
   activity(
     params?: Record<string, string | number | boolean | null | undefined>,
   ): Promise<Record<string, unknown>>;
@@ -257,6 +307,14 @@ export declare function fetchTrustRelease(options?: {
 }): Promise<Record<string, unknown>>;
 
 export { fetchTrustRelease as trustRelease };
+
+export declare function randomOAuthState(options?: {
+  byteLength?: number;
+}): string;
+
+export declare function createOAuthPkcePair(options?: {
+  codeVerifier?: string | null;
+}): Promise<OAuthPkcePair>;
 
 export declare function collectCompletion(
   chunks: ChatCompletionChunk[],

@@ -41,6 +41,51 @@ console.log(resp.choices[0].message.content);
 
 `chatCompletions(...)` defaults to `AUTO_MODEL` when `model` is omitted.
 
+## Browser sign-in / delegated keys
+
+Browser apps should not ask users to paste a full TrustedRouter key. Use
+the OAuth/PKCE delegation flow to mint a limited inference key for your app,
+then store that delegated key in browser storage.
+
+```js
+import { TrustedRouter } from "@lore-hex/trusted-router";
+
+const tr = new TrustedRouter();
+
+// Sign-in button handler.
+const auth = await tr.createOAuthAuthorization({
+  callbackUrl: `${location.origin}/auth/callback`,
+  keyLabel: "Lore Web",
+  limit: "5",
+  usageLimitType: "monthly",
+});
+
+sessionStorage.setItem("tr_oauth", JSON.stringify({
+  state: auth.state,
+  codeVerifier: auth.codeVerifier,
+}));
+location.assign(auth.url);
+```
+
+On the callback page:
+
+```js
+const params = new URLSearchParams(location.search);
+const saved = JSON.parse(sessionStorage.getItem("tr_oauth") || "{}");
+if (params.get("state") !== saved.state) throw new Error("OAuth state mismatch");
+
+const { key } = await new TrustedRouter().exchangeOAuthKey({
+  code: params.get("code"),
+  codeVerifier: saved.codeVerifier,
+});
+
+localStorage.setItem("tr_delegated_key", key);
+```
+
+`createOAuthAuthorization(...)` generates an RFC7636 S256 PKCE verifier and
+challenge locally. `exchangeOAuthKey(...)` posts only the one-time code and
+verifier, and deliberately omits any existing bearer key.
+
 ## Streaming
 
 ```js

@@ -178,6 +178,55 @@ function newIdempotencyKey() {
   return `tr-req-${Date.now().toString(36)}-${suffix}`;
 }
 
+// ---- browser OAuth / PKCE helpers -------------------------------------
+
+export function randomOAuthState({ byteLength = 16 } = {}) {
+  return randomBase64Url(byteLength);
+}
+
+export async function createOAuthPkcePair({ codeVerifier = null } = {}) {
+  const verifier = codeVerifier ?? randomBase64Url(32);
+  return {
+    codeVerifier: verifier,
+    codeChallenge: await sha256Base64Url(verifier),
+    codeChallengeMethod: "S256",
+  };
+}
+
+function randomBase64Url(byteLength) {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Web Crypto getRandomValues is required");
+  }
+  const bytes = new Uint8Array(byteLength);
+  globalThis.crypto.getRandomValues(bytes);
+  return base64UrlEncodeBytes(bytes);
+}
+
+async function sha256Base64Url(text) {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("Web Crypto subtle digest is required");
+  }
+  const bytes = new TextEncoder().encode(text);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return base64UrlEncodeBytes(new Uint8Array(digest));
+}
+
+function base64UrlEncodeBytes(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  const encoded =
+    typeof btoa === "function"
+      ? btoa(binary)
+      : Buffer.from(binary, "binary").toString("base64");
+  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function callbackUrlWithState(callbackUrl, state) {
+  const url = new URL(callbackUrl);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
+
 // ---- user agent --------------------------------------------------------
 
 function userAgent() {
@@ -747,6 +796,78 @@ export class TrustedRouter {
   }
   logout() {
     return this.request("POST", "/auth/logout");
+  }
+
+  oauthAuthorizeUrl({
+    callbackUrl,
+    codeChallenge = null,
+    codeChallengeMethod = codeChallenge ? "S256" : null,
+    keyLabel = null,
+    limit = null,
+    usageLimitType = null,
+    expiresAt = null,
+    spawnAgent = null,
+    spawnCloud = null,
+    state = null,
+  } = {}) {
+    if (!callbackUrl) throw new Error("callbackUrl is required");
+    if (codeChallengeMethod && !codeChallenge) {
+      throw new Error("codeChallenge is required when codeChallengeMethod is set");
+    }
+    const authorizeUrl = new URL(`${this.baseUrl}/auth`);
+    authorizeUrl.searchParams.set(
+      "callback_url",
+      state ? callbackUrlWithState(callbackUrl, state) : callbackUrl,
+    );
+    if (codeChallenge) authorizeUrl.searchParams.set("code_challenge", codeChallenge);
+    if (codeChallengeMethod) {
+      authorizeUrl.searchParams.set("code_challenge_method", codeChallengeMethod);
+    }
+    if (keyLabel) authorizeUrl.searchParams.set("key_label", keyLabel);
+    if (limit !== null && limit !== undefined) {
+      authorizeUrl.searchParams.set("limit", String(limit));
+    }
+    if (usageLimitType) authorizeUrl.searchParams.set("usage_limit_type", usageLimitType);
+    if (expiresAt) authorizeUrl.searchParams.set("expires_at", expiresAt);
+    if (spawnAgent) authorizeUrl.searchParams.set("spawn_agent", spawnAgent);
+    if (spawnCloud) authorizeUrl.searchParams.set("spawn_cloud", spawnCloud);
+    return authorizeUrl.toString();
+  }
+
+  async createOAuthAuthorization({
+    codeVerifier = null,
+    state = randomOAuthState(),
+    ...options
+  } = {}) {
+    const pkce = await createOAuthPkcePair({ codeVerifier });
+    return {
+      ...pkce,
+      state,
+      url: this.oauthAuthorizeUrl({
+        ...options,
+        state,
+        codeChallenge: pkce.codeChallenge,
+        codeChallengeMethod: pkce.codeChallengeMethod,
+      }),
+    };
+  }
+
+  exchangeOAuthKey({
+    code,
+    codeVerifier = null,
+    codeChallengeMethod = null,
+    timeout = null,
+  } = {}) {
+    if (!code) throw new Error("code is required");
+    const body = { code };
+    if (codeVerifier) body.code_verifier = codeVerifier;
+    if (codeChallengeMethod) body.code_challenge_method = codeChallengeMethod;
+    return this.request("POST", "/auth/keys", {
+      body,
+      apiKey: "",
+      credentials: "omit",
+      timeout,
+    });
   }
 
   activity(params = {}) {

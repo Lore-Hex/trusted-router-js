@@ -6,6 +6,7 @@ import {
   DEFAULT_API_BASE_URL,
   TrustedRouter,
   TrustedRouterError,
+  createOAuthPkcePair,
 } from "../src/index.js";
 
 test("normalizes base URL and sends bearer token", async () => {
@@ -126,6 +127,86 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
     url: `${DEFAULT_API_BASE_URL}/auth/logout`,
     method: "POST",
     body: undefined,
+  });
+});
+
+test("OAuth helpers build a browser-safe PKCE authorization URL", async () => {
+  const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+  const pair = await createOAuthPkcePair({ codeVerifier: verifier });
+  assert.deepEqual(pair, {
+    codeVerifier: verifier,
+    codeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+    codeChallengeMethod: "S256",
+  });
+
+  const client = new TrustedRouter({ fetchImpl: async () => new Response() });
+  const authorization = await client.createOAuthAuthorization({
+    callbackUrl: "https://web.lorehex.co/auth/callback",
+    keyLabel: "Lore Web",
+    limit: "5",
+    usageLimitType: "monthly",
+    state: "csrf-state",
+    codeVerifier: verifier,
+  });
+
+  const url = new URL(authorization.url);
+  const callbackUrl = new URL(url.searchParams.get("callback_url"));
+  assert.equal(url.toString().startsWith(`${DEFAULT_API_BASE_URL}/auth?`), true);
+  assert.equal(callbackUrl.origin, "https://web.lorehex.co");
+  assert.equal(callbackUrl.searchParams.get("state"), "csrf-state");
+  assert.equal(url.searchParams.get("key_label"), "Lore Web");
+  assert.equal(url.searchParams.get("limit"), "5");
+  assert.equal(url.searchParams.get("usage_limit_type"), "monthly");
+  assert.equal(url.searchParams.get("code_challenge"), pair.codeChallenge);
+  assert.equal(url.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(authorization.state, "csrf-state");
+  assert.equal(authorization.codeVerifier, verifier);
+});
+
+test("exchangeOAuthKey posts code and verifier without bearer auth", async () => {
+  let seen;
+  const client = new TrustedRouter({
+    apiKey: "existing-key",
+    fetchImpl: async (url, init) => {
+      seen = {
+        url,
+        method: init.method,
+        credentials: init.credentials,
+        authorization: new Headers(init.headers).get("authorization"),
+        body: JSON.parse(init.body),
+      };
+      return new Response(
+        JSON.stringify({
+          key: "sk-tr-v1-delegated",
+          user_id: "user_1",
+          data: { name: "Lore Web" },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+
+  const exchanged = await client.exchangeOAuthKey({
+    code: "auth_code-example",
+    codeVerifier: "verifier",
+    codeChallengeMethod: "S256",
+  });
+
+  assert.deepEqual(exchanged, {
+    key: "sk-tr-v1-delegated",
+    user_id: "user_1",
+    data: { name: "Lore Web" },
+  });
+  assert.deepEqual(seen, {
+    url: `${DEFAULT_API_BASE_URL}/auth/keys`,
+    method: "POST",
+    credentials: "omit",
+    authorization: null,
+    body: {
+      code: "auth_code-example",
+      code_verifier: "verifier",
+      code_challenge_method: "S256",
+    },
   });
 });
 
