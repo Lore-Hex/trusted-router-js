@@ -210,6 +210,41 @@ test("exchangeOAuthKey posts code and verifier without bearer auth", async () =>
   });
 });
 
+test("userInfo GETs /auth/userinfo with the instance bearer key", async () => {
+  let seen;
+  const profile = {
+    sub: "user_abc",
+    email: "person@example.com",
+    email_verified: true,
+    wallet_address: "0xabc",
+    workspace_id: "ws_1",
+    created_at: "2026-06-07T00:00:00Z",
+  };
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-v1-delegated",
+    fetchImpl: async (url, init) => {
+      seen = {
+        url,
+        method: init.method,
+        authorization: new Headers(init.headers).get("authorization"),
+      };
+      return new Response(JSON.stringify({ data: profile }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const result = await client.userInfo();
+
+  assert.deepEqual(result, { data: profile });
+  assert.deepEqual(seen, {
+    url: `${DEFAULT_API_BASE_URL}/auth/userinfo`,
+    method: "GET",
+    authorization: "Bearer sk-tr-v1-delegated",
+  });
+});
+
 test("chatCompletionsText yields parsed SSE text deltas", async () => {
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",

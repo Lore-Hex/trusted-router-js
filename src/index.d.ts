@@ -211,7 +211,30 @@ export interface OAuthKeyExchangeRequest {
 export interface OAuthKeyExchangeResponse {
   key: string;
   user_id?: string | null;
+  identity?: OAuthIdentity | null;
   data: Record<string, unknown>;
+}
+
+export interface OAuthIdentity {
+  sub: string;
+  email?: string | null;
+  email_verified?: boolean | null;
+  wallet_address?: string | null;
+  [extra: string]: unknown;
+}
+
+export interface UserInfoData {
+  sub: string;
+  email?: string | null;
+  email_verified?: boolean | null;
+  wallet_address?: string | null;
+  workspace_id?: string | null;
+  created_at?: string | null;
+  [extra: string]: unknown;
+}
+
+export interface UserInfoResponse {
+  data: UserInfoData;
 }
 
 export declare class TrustedRouter {
@@ -286,6 +309,7 @@ export declare class TrustedRouter {
   ): Promise<Record<string, unknown>>;
   authSession(): Promise<Record<string, unknown>>;
   logout(): Promise<Record<string, unknown>>;
+  userInfo(): Promise<UserInfoResponse>;
   oauthAuthorizeUrl(options: OAuthAuthorizeUrlOptions): string;
   createOAuthAuthorization(
     options: CreateOAuthAuthorizationOptions,

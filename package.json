@@ -13,6 +13,10 @@
     "./attestation": {
       "types": "./src/attestation.d.ts",
       "import": "./src/attestation.js"
+    },
+    "./oauth": {
+      "types": "./src/oauth.d.ts",
+      "import": "./src/oauth.js"
     }
   },
   "files": [
@@ -31,7 +35,7 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/attestation.js",
+    "check": "node --check src/index.js && node --check src/attestation.js && node --check src/oauth.js",
     "test": "node --test"
   },
   "engines": {

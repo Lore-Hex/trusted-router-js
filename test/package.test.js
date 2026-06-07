@@ -15,7 +15,11 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
   assert.equal(pkg.version, "0.3.0");
   assert.equal(pkg.license, "Apache-2.0");
   assert.deepEqual(pkg.files, ["src", "README.md", "LICENSE"]);
-  assert.deepEqual(Object.keys(pkg.exports).sort(), [".", "./attestation"]);
+  assert.deepEqual(Object.keys(pkg.exports).sort(), [
+    ".",
+    "./attestation",
+    "./oauth",
+  ]);
   assert.equal(pkg.publishConfig.access, "public");
   assert.equal(pkg.publishConfig.provenance, true);
 });
@@ -31,6 +35,8 @@ test("npm dry-run package contains only release artifacts", async () => {
   assert.ok(paths.includes("src/index.d.ts"));
   assert.ok(paths.includes("src/attestation.js"));
   assert.ok(paths.includes("src/attestation.d.ts"));
+  assert.ok(paths.includes("src/oauth.js"));
+  assert.ok(paths.includes("src/oauth.d.ts"));
   assert.equal(paths.some((p) => p.startsWith("test/")), false);
   assert.equal(paths.some((p) => p.includes(".private")), false);
   assert.equal(paths.some((p) => p.startsWith(".env")), false);

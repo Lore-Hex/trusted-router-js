@@ -798,6 +798,16 @@ export class TrustedRouter {
     return this.request("POST", "/auth/logout");
   }
 
+  /**
+   * Fetch the OIDC-style profile for the instance's delegated key.
+   * GET /auth/userinfo with Authorization: Bearer <api_key>.
+   * Returns the parsed body, e.g. { data: { sub, email, email_verified,
+   * wallet_address, workspace_id, created_at } }.
+   */
+  userInfo() {
+    return this.request("GET", "/auth/userinfo");
+  }
+
   oauthAuthorizeUrl({
     callbackUrl,
     codeChallenge = null,
