@@ -86,6 +86,38 @@ localStorage.setItem("tr_delegated_key", key);
 challenge locally. `exchangeOAuthKey(...)` posts only the one-time code and
 verifier, and deliberately omits any existing bearer key.
 
+## Sign in with TrustedRouter
+
+For browser SPAs, `BrowserOAuthFlow` (from `@lore-hex/trusted-router/oauth`)
+wraps the lower-level helpers above: `initiate(...)` builds the authorize URL
+and stashes `{ state, codeVerifier }` in `sessionStorage`, and
+`handleCallback(...)` validates `state`, exchanges the `code`, and returns the
+delegated `key` + verified `identity`. Then `client.userInfo()` reads the
+signed-in user.
+
+```js
+import { TrustedRouter } from "@lore-hex/trusted-router";
+import { BrowserOAuthFlow } from "@lore-hex/trusted-router/oauth";
+
+const flow = new BrowserOAuthFlow(`${location.origin}/auth/callback`, {
+  client: new TrustedRouter(),
+});
+
+// sign-in button:
+const { url } = await flow.initiate({ keyLabel: "My App", limit: "5" });
+location.assign(url);
+
+// on /auth/callback (reads location.search; throws on state mismatch):
+const { key, identity } = await flow.handleCallback();
+localStorage.setItem("tr_delegated_key", key);
+
+// later:
+const { data } = await new TrustedRouter({ apiKey: key }).userInfo();
+```
+
+Full flow, endpoints, and security notes:
+[Sign in with TrustedRouter](https://github.com/Lore-Hex/quill-router/blob/main/docs/sign-in-with-trustedrouter.md).
+
 ## Streaming
 
 ```js
