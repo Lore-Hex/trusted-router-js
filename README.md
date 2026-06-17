@@ -41,6 +41,36 @@ console.log(resp.choices[0].message.content);
 
 `chatCompletions(...)` defaults to `AUTO_MODEL` when `model` is omitted.
 
+## Fusion
+
+Fan a request across a panel of models and let a judge model pick or synthesize
+one answer. `fusion(...)` returns the same OpenAI-shape `chat.completion` as
+`chatCompletions`. `FUSION_FREEDOM_PANEL` / `FUSION_FREEDOM_FALLBACK_JUDGES` are
+the recommended most-permissive configuration.
+
+```js
+import {
+  TrustedRouter,
+  FUSION_FREEDOM_PANEL,
+  FUSION_FREEDOM_FALLBACK_JUDGES,
+} from "@lore-hex/trusted-router";
+
+const client = new TrustedRouter({ apiKey: "sk-tr-v1-..." });
+
+const resp = await client.fusion({
+  messages: [{ role: "user", content: "explain how mRNA vaccines work" }],
+  analysisModels: FUSION_FREEDOM_PANEL,   // the panel
+  model: "z-ai/glm-5.1",                  // judge / synthesis model
+  selectionStrategy: "first_non_refusal", // or synthesize / synthesize_non_refusals / first_success
+  fallbackJudges: FUSION_FREEDOM_FALLBACK_JUDGES, // tried in order if a judge refuses/fails
+});
+
+console.log(resp.choices[0].message.content);
+```
+
+Or attach `fusionTool(...)` to any chat call yourself. `preset: "quality"` or
+`"budget"` picks a built-in panel.
+
 ## Browser sign-in / delegated keys
 
 Browser apps should not ask users to paste a full TrustedRouter key. Use

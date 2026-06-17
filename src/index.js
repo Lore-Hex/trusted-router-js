@@ -20,6 +20,55 @@ export const DEFAULT_TRUST_RELEASE_URL =
 export const DEFAULT_STATUS_URL =
   "https://status.trustedrouter.com/status.json";
 export const AUTO_MODEL = "trustedrouter/auto";
+export const FUSION_MODEL = "trustedrouter/fusion";
+
+// Recommended panel + judge fallback chain for maximum willingness to answer —
+// the configuration that answered all 30 PrometheusBench unsafe prompts. Pass
+// these to `fusion(...)` (or build your own) when you want the most permissive
+// result the panel can produce.
+export const FUSION_FREEDOM_PANEL = Object.freeze([
+  "moonshotai/kimi-k2.7-code",
+  "deepseek/deepseek-v4-flash",
+  "google/gemini-3.5-flash",
+  "google/gemini-3.1-pro-preview",
+  "minimax/minimax-m3",
+  "z-ai/glm-5.1",
+]);
+export const FUSION_FREEDOM_FALLBACK_JUDGES = Object.freeze([
+  "z-ai/glm-5.1",
+  "moonshotai/kimi-k2.6",
+  "google/gemini-2.5-flash",
+  "deepseek/deepseek-v4-flash",
+  "google/gemini-3-flash-preview",
+  "tencent/hy3-preview",
+]);
+
+/**
+ * Build a `trustedrouter:fusion` tool spec. Fan a request across a panel of
+ * models and have a judge model pick or synthesize one answer. Omit a field to
+ * let the gateway default it (selectionStrategy defaults to "synthesize").
+ */
+export function fusionTool({
+  analysisModels = null,
+  model = null, // judge / synthesis model
+  selectionStrategy = null,
+  fallbackJudges = null,
+  fallbackFinalModels = null,
+  maxCompletionTokens = null,
+  maxToolCalls = null,
+  preset = null,
+} = {}) {
+  const parameters = {};
+  if (preset !== null) parameters.preset = preset;
+  if (analysisModels !== null) parameters.analysis_models = analysisModels;
+  if (model !== null) parameters.model = model;
+  if (selectionStrategy !== null) parameters.selection_strategy = selectionStrategy;
+  if (fallbackJudges !== null) parameters.fallback_judges = fallbackJudges;
+  if (fallbackFinalModels !== null) parameters.fallback_final_models = fallbackFinalModels;
+  if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
+  if (maxToolCalls !== null) parameters.max_tool_calls = maxToolCalls;
+  return { type: "trustedrouter:fusion", parameters };
+}
 
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
 // aliases the apex because the regional subdomain isn't published yet.
@@ -556,6 +605,45 @@ export class TrustedRouter {
     for await (const chunk of response.body) {
       yield chunk;
     }
+  }
+
+  // ---- fusion ----------------------------------------------------------
+
+  /**
+   * Run a request through TrustedRouter Fusion: fan it across a panel of
+   * models and return one answer chosen/synthesized by a judge model. Returns
+   * an OpenAI-shape chat.completion, same as `chatCompletions`. Pass
+   * `fallbackJudges` so a single squeamish judge can't sink a prompt.
+   */
+  async fusion({
+    messages,
+    analysisModels = null,
+    model = null, // judge / synthesis model
+    selectionStrategy = null,
+    fallbackJudges = null,
+    fallbackFinalModels = null,
+    maxCompletionTokens = null,
+    maxToolCalls = null,
+    preset = null,
+    ...params
+  } = {}) {
+    return this.chatCompletions({
+      model: FUSION_MODEL,
+      messages,
+      tools: [
+        fusionTool({
+          analysisModels,
+          model,
+          selectionStrategy,
+          fallbackJudges,
+          fallbackFinalModels,
+          maxCompletionTokens,
+          maxToolCalls,
+          preset,
+        }),
+      ],
+      ...params,
+    });
   }
 
   // ---- catalog / metadata ---------------------------------------------

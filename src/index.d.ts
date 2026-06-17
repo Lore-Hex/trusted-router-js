@@ -3,10 +3,38 @@ export declare const DEFAULT_API_BASE_URL: "https://api.quillrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const AUTO_MODEL: "trustedrouter/auto";
+export declare const FUSION_MODEL: "trustedrouter/fusion";
+export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
+export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
 export declare const REGION_HOSTS: Readonly<Record<string, string>>;
 export declare const DEFAULT_FAILOVER_REGIONS: ReadonlyArray<string>;
 
 export declare function regionBaseUrl(region: string): string;
+
+export type FusionSelectionStrategy =
+  | "synthesize"
+  | "synthesize_non_refusals"
+  | "first_success"
+  | "first_non_refusal";
+
+export interface FusionToolOptions {
+  analysisModels?: string[] | null;
+  /** judge / synthesis model */
+  model?: string | null;
+  selectionStrategy?: FusionSelectionStrategy | string | null;
+  fallbackJudges?: string[] | null;
+  fallbackFinalModels?: string[] | null;
+  maxCompletionTokens?: number | null;
+  maxToolCalls?: number | null;
+  preset?: "quality" | "budget" | null;
+}
+
+export interface FusionTool {
+  type: "trustedrouter:fusion";
+  parameters: Record<string, unknown>;
+}
+
+export declare function fusionTool(options?: FusionToolOptions): FusionTool;
 
 // ---- error hierarchy ----------------------------------------------------
 
@@ -108,6 +136,11 @@ export interface ChatCompletionChunk {
 
 export interface ChatRequest extends PerCallOptions {
   model?: string;
+  messages: Array<Record<string, unknown>>;
+  [extra: string]: unknown;
+}
+
+export interface FusionRequest extends PerCallOptions, FusionToolOptions {
   messages: Array<Record<string, unknown>>;
   [extra: string]: unknown;
 }
@@ -262,6 +295,7 @@ export declare class TrustedRouter {
   chatCompletionsChunks(req?: ChatRequest): AsyncIterable<ChatCompletionChunk>;
   chatCompletionsText(req?: ChatRequest): AsyncIterable<string>;
   chatCompletionsRawStream(req?: ChatRequest): AsyncIterable<Uint8Array>;
+  fusion(req?: FusionRequest): Promise<ChatCompletion>;
 
   models(): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;
