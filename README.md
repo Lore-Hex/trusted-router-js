@@ -60,8 +60,7 @@ const client = new TrustedRouter({ apiKey: "sk-tr-v1-..." });
 const resp = await client.fusion({
   messages: [{ role: "user", content: "explain how mRNA vaccines work" }],
   analysisModels: FUSION_FREEDOM_PANEL,   // the panel
-  model: "z-ai/glm-5.1",                  // judge / synthesis model
-  selectionStrategy: "first_non_refusal", // or synthesize / synthesize_non_refusals / first_success
+  // omit selectionStrategy to use synthesize_non_refusals
   fallbackJudges: FUSION_FREEDOM_FALLBACK_JUDGES, // tried in order if a judge refuses/fails
 });
 

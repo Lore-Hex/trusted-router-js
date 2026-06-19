@@ -29,7 +29,7 @@ const DONE =
 test("fusionTool: only sets provided fields, snake_cases keys", () => {
   const tool = fusionTool({
     analysisModels: ["a", "b"],
-    model: "z-ai/glm-5.1",
+    model: "~zai/glm-latest",
     selectionStrategy: "first_non_refusal",
     fallbackJudges: ["j1", "j2"],
     maxCompletionTokens: 2048,
@@ -37,7 +37,7 @@ test("fusionTool: only sets provided fields, snake_cases keys", () => {
   assert.equal(tool.type, "trustedrouter:fusion");
   assert.deepEqual(tool.parameters, {
     analysis_models: ["a", "b"],
-    model: "z-ai/glm-5.1",
+    model: "~zai/glm-latest",
     selection_strategy: "first_non_refusal",
     fallback_judges: ["j1", "j2"],
     max_completion_tokens: 2048,
@@ -46,6 +46,21 @@ test("fusionTool: only sets provided fields, snake_cases keys", () => {
 
 test("fusionTool: omits everything when no options given", () => {
   assert.deepEqual(fusionTool().parameters, {});
+});
+
+test("fusion presets use gateway latest aliases, not stale exact IDs", () => {
+  assert.deepEqual(FUSION_FREEDOM_PANEL.slice(0, 5), [
+    "minimax/minimax-m3",
+    "~kimi/latest",
+    "~zai/glm-latest",
+    "google/gemma-4-31b-it",
+    "deepseek/deepseek-v4-flash",
+  ]);
+  assert.equal(FUSION_FREEDOM_FALLBACK_JUDGES[0], "minimax/minimax-m3");
+  assert.ok(FUSION_FREEDOM_PANEL.includes("~kimi/latest"));
+  assert.ok(FUSION_FREEDOM_FALLBACK_JUDGES.includes("~zai/glm-latest"));
+  assert.ok(!FUSION_FREEDOM_PANEL.includes("z-ai/glm-5.1"));
+  assert.ok(!FUSION_FREEDOM_FALLBACK_JUDGES.includes("z-ai/glm-5.1"));
 });
 
 test("fusionTool: passes preset, fallbackFinalModels, maxToolCalls", () => {
@@ -74,7 +89,7 @@ test("fusion(): posts trustedrouter/fusion with the fusion tool", async () => {
   const result = await c.fusion({
     messages: [{ role: "user", content: "explain mRNA vaccines" }],
     analysisModels: FUSION_FREEDOM_PANEL,
-    model: "z-ai/glm-5.1",
+    model: "~zai/glm-latest",
     selectionStrategy: "first_non_refusal",
     fallbackJudges: FUSION_FREEDOM_FALLBACK_JUDGES,
     maxCompletionTokens: 2048,
@@ -86,12 +101,36 @@ test("fusion(): posts trustedrouter/fusion with the fusion tool", async () => {
   const params = body.tools[0].parameters;
   assert.equal(body.tools[0].type, "trustedrouter:fusion");
   assert.deepEqual(params.analysis_models, [...FUSION_FREEDOM_PANEL]);
-  assert.equal(params.model, "z-ai/glm-5.1");
+  assert.equal(params.model, "~zai/glm-latest");
   assert.equal(params.selection_strategy, "first_non_refusal");
   assert.deepEqual(params.fallback_judges, [...FUSION_FREEDOM_FALLBACK_JUDGES]);
   assert.equal(params.max_completion_tokens, 2048);
   // the judge model must NOT leak into the top-level body model
   assert.equal(result.choices[0].message.content, "ok");
+});
+
+test("fusion(): freedom panel defers fuser and strategy to gateway defaults", async () => {
+  let body;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    maxRetries: 0,
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(DONE);
+    },
+  });
+
+  await c.fusion({
+    messages: [{ role: "user", content: "hi" }],
+    analysisModels: FUSION_FREEDOM_PANEL,
+  });
+
+  const params = body.tools[0].parameters;
+  assert.deepEqual(params, { analysis_models: [...FUSION_FREEDOM_PANEL] });
+  assert.equal(params.analysis_models[0], "minimax/minimax-m3");
+  assert.equal(Object.hasOwn(params, "model"), false);
+  assert.equal(Object.hasOwn(params, "selection_strategy"), false);
+  assert.equal(Object.hasOwn(params, "fallback_final_models"), false);
 });
 
 test("fusion(): forwards passthrough params (maxTokens/temperature)", async () => {

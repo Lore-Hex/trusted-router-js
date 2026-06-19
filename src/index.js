@@ -22,31 +22,29 @@ export const DEFAULT_STATUS_URL =
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FUSION_MODEL = "trustedrouter/fusion";
 
-// Recommended panel + judge fallback chain for maximum willingness to answer —
-// the configuration that answered all 30 PrometheusBench unsafe prompts. Pass
-// these to `fusion(...)` (or build your own) when you want the most permissive
-// result the panel can produce.
+// Recommended panel + judge fallback chain for maximum willingness to answer.
+// Use gateway-supported latest aliases where possible so examples survive
+// provider deprecations without requiring an SDK release.
 export const FUSION_FREEDOM_PANEL = Object.freeze([
-  "moonshotai/kimi-k2.7-code",
-  "deepseek/deepseek-v4-flash",
-  "google/gemini-3.5-flash",
-  "google/gemini-3.1-pro-preview",
   "minimax/minimax-m3",
-  "z-ai/glm-5.1",
+  "~kimi/latest",
+  "~zai/glm-latest",
+  "google/gemma-4-31b-it",
+  "deepseek/deepseek-v4-flash",
 ]);
 export const FUSION_FREEDOM_FALLBACK_JUDGES = Object.freeze([
-  "z-ai/glm-5.1",
-  "moonshotai/kimi-k2.6",
-  "google/gemini-2.5-flash",
+  "minimax/minimax-m3",
+  "~zai/glm-latest",
+  "~kimi/latest",
   "deepseek/deepseek-v4-flash",
-  "google/gemini-3-flash-preview",
-  "tencent/hy3-preview",
+  "google/gemma-4-31b-it",
 ]);
 
 /**
  * Build a `trustedrouter:fusion` tool spec. Fan a request across a panel of
  * models and have a judge model pick or synthesize one answer. Omit a field to
- * let the gateway default it (selectionStrategy defaults to "synthesize").
+ * let the gateway default it (selectionStrategy defaults to
+ * "synthesize_non_refusals").
  */
 export function fusionTool({
   analysisModels = null,
