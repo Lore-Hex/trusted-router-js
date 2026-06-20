@@ -13,12 +13,14 @@
  * SubtleCrypto is only imported when callers actually need to verify.
  */
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
 export const DEFAULT_STATUS_URL =
   "https://status.trustedrouter.com/status.json";
+export const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+export const DEFAULT_FUSION_TIMEOUT_MS = 600_000;
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
 export const FUSION_MODEL = "trustedrouter/fusion";
@@ -34,6 +36,13 @@ export const FUSION_FREEDOM_PANEL = Object.freeze([
   "deepseek/deepseek-v4-flash",
 ]);
 export const FUSION_FREEDOM_FALLBACK_JUDGES = Object.freeze([
+  "minimax/minimax-m3",
+  "~zai/glm-latest",
+  "~kimi/latest",
+  "deepseek/deepseek-v4-flash",
+  "google/gemma-4-31b-it",
+]);
+export const FUSION_FREEDOM_FALLBACK_FINALS = Object.freeze([
   "minimax/minimax-m3",
   "~zai/glm-latest",
   "~kimi/latest",
@@ -299,6 +308,7 @@ export class TrustedRouter {
     headers = {},
     workspaceId = null,
     maxRetries = 2,
+    timeout = DEFAULT_REQUEST_TIMEOUT_MS,
     regionalFailover = null,
     failoverRegions = null,
   } = {}) {
@@ -321,7 +331,11 @@ export class TrustedRouter {
     this.workspaceId = workspaceId;
     this.fetch = fetchImpl;
     this.defaultHeaders = headers;
-    this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
+    this.timeout = timeout;
+    this.maxRetries = Math.max(
+      0,
+      Number.isInteger(maxRetries) ? maxRetries : Math.trunc(Number(maxRetries) || 0),
+    );
     const failoverEnabled =
       regionalFailover === null ? !explicitEndpoint : Boolean(regionalFailover);
     this.baseUrls = regionalBaseUrls(
@@ -368,7 +382,7 @@ export class TrustedRouter {
             body: requestBody,
             ...rest,
           },
-          timeout,
+          timeout ?? this.timeout,
         );
       } catch (error) {
         if (error?.name === "AbortError") throw error;
@@ -438,7 +452,7 @@ export class TrustedRouter {
             body: requestBody,
             ...rest,
           },
-          timeout,
+          timeout ?? this.timeout,
         );
       } catch (error) {
         if (error?.name === "AbortError") throw error;
@@ -523,7 +537,8 @@ export class TrustedRouter {
   } = {}) {
     // The gateway always streams. Collect chunks into an OpenAI-shape
     // chat.completion dict so callers that asked for non-streaming
-    // still get a single result back.
+    // still get a single result back. Request a trailing usage frame so
+    // the collected completion carries token counts.
     const chunks = [];
     for await (const chunk of this.chatCompletionsChunks({
       model,
@@ -533,7 +548,7 @@ export class TrustedRouter {
       idempotencyKey,
       workspaceId,
       timeout,
-      ...params,
+      ...withUsage(params),
     })) {
       chunks.push(chunk);
     }
@@ -626,10 +641,15 @@ export class TrustedRouter {
     preset = null,
     ...params
   } = {}) {
+    // Append the fusion tool AFTER any caller-supplied tools (like Python)
+    // so a caller `tools` doesn't overwrite the fusion tool. Default the
+    // per-call timeout to the longer fusion budget when not specified.
+    const { tools: callerTools = [], timeout, ...rest } = params;
     return this.chatCompletions({
       model: FUSION_MODEL,
       messages,
       tools: [
+        ...callerTools,
         fusionTool({
           analysisModels,
           model,
@@ -641,7 +661,8 @@ export class TrustedRouter {
           preset,
         }),
       ],
-      ...params,
+      timeout: timeout ?? DEFAULT_FUSION_TIMEOUT_MS,
+      ...rest,
     });
   }
 
@@ -970,8 +991,17 @@ export class TrustedRouter {
   activity(params = {}) {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
-      if (value !== undefined && value !== null) {
-        query.set(key, String(value));
+      if (value === undefined || value === null) continue;
+      // Repeat the key per element for array-valued params, matching
+      // httpx QueryParams (rather than joining with ',').
+      if (Array.isArray(value)) {
+        for (const element of value) {
+          if (element !== undefined && element !== null) {
+            query.append(key, String(element));
+          }
+        }
+      } else {
+        query.append(key, String(value));
       }
     }
     const suffix = query.size > 0 ? `?${query}` : "";
@@ -1206,6 +1236,19 @@ function broadcastDestinationBody({
   return body;
 }
 
+/**
+ * Ask the gateway to emit a trailing usage frame so a *collected* completion
+ * carries token counts. The streamed transport omits usage unless
+ * `stream_options.include_usage` is set; default it on (callers can still
+ * override by passing their own `stream_options`). Mirrors Python `_with_usage`.
+ */
+function withUsage(params) {
+  return {
+    ...params,
+    stream_options: { include_usage: true, ...(params.stream_options ?? {}) },
+  };
+}
+
 function errorMessage(payload) {
   if (payload && typeof payload === "object") {
     if (payload.error && typeof payload.error === "object") {
@@ -1237,15 +1280,55 @@ export function collectCompletion(chunks) {
   }
   const parts = [];
   let finishReason = null;
+  let role = "assistant";
+  let usage = null;
+  // tool-call deltas arrive fragmented and keyed by `index`; the arguments
+  // stream in pieces and must be concatenated in arrival order.
+  const toolCalls = new Map();
   for (const c of chunks) {
+    if (c?.usage && typeof c.usage === "object") usage = c.usage;
     const choice = c?.choices?.[0];
     if (!choice) continue;
-    const content = choice?.delta?.content;
-    if (typeof content === "string") parts.push(content);
+    const delta = choice.delta ?? {};
+    if (typeof delta.role === "string") role = delta.role;
+    if (typeof delta.content === "string") parts.push(delta.content);
+    for (const tc of delta.tool_calls ?? []) {
+      if (!tc || typeof tc !== "object") continue;
+      const idx = tc.index ?? 0;
+      let slot = toolCalls.get(idx);
+      if (!slot) {
+        slot = {
+          index: idx,
+          type: "function",
+          function: { name: "", arguments: "" },
+        };
+        toolCalls.set(idx, slot);
+      }
+      if (tc.id) slot.id = tc.id;
+      if (tc.type) slot.type = tc.type;
+      const fn = tc.function;
+      if (fn && typeof fn === "object") {
+        if (fn.name) slot.function.name = fn.name;
+        if (typeof fn.arguments === "string") {
+          slot.function.arguments += fn.arguments;
+        }
+      }
+    }
     if (choice.finish_reason) finishReason = choice.finish_reason;
   }
   const last = chunks[chunks.length - 1];
-  return {
+  const content = parts.join("");
+  // OpenAI sets content to null when a turn is only tool calls.
+  const message = {
+    role,
+    content: content || (toolCalls.size ? null : ""),
+  };
+  if (toolCalls.size) {
+    message.tool_calls = [...toolCalls.keys()]
+      .sort((a, b) => a - b)
+      .map((i) => toolCalls.get(i));
+  }
+  const result = {
     id: last?.id ?? "",
     object: "chat.completion",
     created: last?.created ?? 0,
@@ -1253,9 +1336,11 @@ export function collectCompletion(chunks) {
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: parts.join("") },
+        message,
         finish_reason: finishReason ?? "stop",
       },
     ],
   };
+  if (usage !== null) result.usage = usage;
+  return result;
 }

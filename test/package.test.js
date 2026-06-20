@@ -6,6 +6,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { VERSION } from "../src/index.js";
+
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -22,6 +24,11 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
   ]);
   assert.equal(pkg.publishConfig.access, "public");
   assert.equal(pkg.publishConfig.provenance, true);
+});
+
+test("exported VERSION matches package.json version", async () => {
+  const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+  assert.equal(VERSION, pkg.version);
 });
 
 test("npm dry-run package contains only release artifacts", async () => {

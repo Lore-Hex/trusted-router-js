@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEFAULT_FUSION_TIMEOUT_MS,
   FUSION_FREEDOM_FALLBACK_JUDGES,
   FUSION_FREEDOM_PANEL,
   FUSION_MODEL,
@@ -151,4 +152,61 @@ test("fusion(): forwards passthrough params (maxTokens/temperature)", async () =
   assert.equal(body.model, FUSION_MODEL);
   assert.equal(body.max_tokens, 512);
   assert.equal(body.temperature, 0);
+});
+
+test("fusion(): caller tools come first, fusion tool is not overwritten", async () => {
+  let body;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    maxRetries: 0,
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(DONE);
+    },
+  });
+  const callerTool = {
+    type: "function",
+    function: { name: "lookup", parameters: {} },
+  };
+  await c.fusion({
+    messages: [{ role: "user", content: "hi" }],
+    tools: [callerTool],
+    analysisModels: FUSION_FREEDOM_PANEL,
+  });
+  // both the caller tool AND the fusion tool survive
+  assert.equal(body.tools.length, 2);
+  assert.deepEqual(body.tools[0], callerTool);
+  assert.equal(body.tools[1].type, "trustedrouter:fusion");
+});
+
+test("fusion(): defaults the per-call timeout to the 600s fusion budget", async () => {
+  let seenTimeout;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    maxRetries: 0,
+    fetchImpl: async () => sseResponse(DONE),
+  });
+  const original = c._fetchWithTimeout.bind(c);
+  c._fetchWithTimeout = (url, init, timeoutMs) => {
+    seenTimeout = timeoutMs;
+    return original(url, init, timeoutMs);
+  };
+  await c.fusion({ messages: [{ role: "user", content: "hi" }] });
+  assert.equal(seenTimeout, DEFAULT_FUSION_TIMEOUT_MS);
+});
+
+test("fusion(): an explicit timeout overrides the fusion default", async () => {
+  let seenTimeout;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    maxRetries: 0,
+    fetchImpl: async () => sseResponse(DONE),
+  });
+  const original = c._fetchWithTimeout.bind(c);
+  c._fetchWithTimeout = (url, init, timeoutMs) => {
+    seenTimeout = timeoutMs;
+    return original(url, init, timeoutMs);
+  };
+  await c.fusion({ messages: [{ role: "user", content: "hi" }], timeout: 1234 });
+  assert.equal(seenTimeout, 1234);
 });
