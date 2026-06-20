@@ -3,6 +3,7 @@ export declare const DEFAULT_API_BASE_URL: "https://api.quillrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const AUTO_MODEL: "trustedrouter/auto";
+export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;

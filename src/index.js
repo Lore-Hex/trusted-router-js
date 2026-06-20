@@ -20,6 +20,7 @@ export const DEFAULT_TRUST_RELEASE_URL =
 export const DEFAULT_STATUS_URL =
   "https://status.trustedrouter.com/status.json";
 export const AUTO_MODEL = "trustedrouter/auto";
+export const FAST_MODEL = "trustedrouter/fast";
 export const FUSION_MODEL = "trustedrouter/fusion";
 
 // Recommended panel + judge fallback chain for maximum willingness to answer.

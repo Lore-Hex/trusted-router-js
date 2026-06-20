@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AUTO_MODEL,
   DEFAULT_API_BASE_URL,
+  FAST_MODEL,
   TrustedRouter,
   TrustedRouterError,
   createOAuthPkcePair,
@@ -91,6 +92,7 @@ test("defaults chat to trustedrouter auto and exposes region/provider helpers", 
   });
 
   assert.equal(AUTO_MODEL, "trustedrouter/auto");
+  assert.equal(FAST_MODEL, "trustedrouter/fast");
   await client.chatCompletions({
     messages: [{ role: "user", content: "hello" }],
   });
