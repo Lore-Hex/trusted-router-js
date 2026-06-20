@@ -80,6 +80,9 @@ async function goodClaims({ nonce = null } = {}) {
     },
     tls_cert_sha256: FAKE_CERT_SHA,
     eat_nonce: nonces,
+    // Real CSP tokens carry dbgstat; requireProductionCvm (default true)
+    // demands 'disabled-since-boot'.
+    dbgstat: "disabled-since-boot",
   };
 }
 
@@ -120,14 +123,14 @@ test("verify: works when aud is a string not a list (RFC 7519)", async () => {
 
 test("verify: malformed JWT (wrong segment count) raises", async () => {
   await assert.rejects(
-    verifyGatewayAttestation(enc("only.two"), { policy: { audience: "x", imageDigest: null, imageReference: null }, jwks: { keys: [] } }),
+    verifyGatewayAttestation(enc("only.two"), { policy: { audience: "x", imageDigest: "sha256:x", imageReference: null }, jwks: { keys: [] } }),
     /3 JWT segments/,
   );
 });
 
 test("verify: bad base64 in JWT raises", async () => {
   await assert.rejects(
-    verifyGatewayAttestation(enc("!!!.???.@@@"), { policy: { audience: "x", imageDigest: null, imageReference: null }, jwks: { keys: [] } }),
+    verifyGatewayAttestation(enc("!!!.???.@@@"), { policy: { audience: "x", imageDigest: "sha256:x", imageReference: null }, jwks: { keys: [] } }),
     /invalid JWT/,
   );
 });
@@ -136,7 +139,7 @@ test("verify: unsupported alg raises", async () => {
   const kp = await genKeypair();
   const jwt = await makeJwt(kp, await goodClaims(), { alg: "HS256" });
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
     /unsupported JWT alg/,
   );
 });
@@ -145,7 +148,7 @@ test("verify: missing kid in JWKS raises", async () => {
   const kp = await genKeypair();
   const jwt = await makeJwt(kp, await goodClaims(), { kid: "missing-kid" });
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp, "other")] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kp, "other")] } }),
     /no JWK with kid/,
   );
 });
@@ -155,7 +158,7 @@ test("verify: signature mismatch raises (JWT signed by A, JWKS has B)", async ()
   const kpB = await genKeypair();
   const jwt = await makeJwt(kpA, await goodClaims());
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kpB)] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kpB)] } }),
     /signature/,
   );
 });
@@ -165,7 +168,7 @@ test("verify: expired JWT raises", async () => {
   const claims = { ...(await goodClaims()), exp: Math.floor(Date.now() / 1000) - 60 };
   const jwt = await makeJwt(kp, claims);
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
     /expired/,
   );
 });
@@ -175,7 +178,7 @@ test("verify: wrong issuer raises", async () => {
   const claims = { ...(await goodClaims()), iss: "https://evil.example/issuer" };
   const jwt = await makeJwt(kp, claims);
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
     /issuer/,
   );
 });
@@ -185,7 +188,7 @@ test("verify: wrong audience raises", async () => {
   const claims = { ...(await goodClaims()), aud: ["someone-else"] };
   const jwt = await makeJwt(kp, claims);
   await assert.rejects(
-    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
     /audience/,
   );
 });
@@ -219,7 +222,7 @@ test("verify: missing nonce echo raises (replay defense)", async () => {
   const jwt = await makeJwt(kp, await goodClaims()); // no caller nonce in claims
   await assert.rejects(
     verifyGatewayAttestation(jwt, {
-      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
       nonceHex: "expected-nonce-hex",
       tlsCertDer: FAKE_CERT,
       jwks: { keys: [await publicJwk(kp)] },
@@ -236,7 +239,7 @@ test("verify: missing cert binding raises", async () => {
   const jwt = await makeJwt(kp, claims);
   await assert.rejects(
     verifyGatewayAttestation(jwt, {
-      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
       tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
     }),
     /TLS cert/,
@@ -251,7 +254,7 @@ test("verify: JWT cert sha mismatch with actual TLS cert raises", async () => {
   const jwt = await makeJwt(kp, claims);
   await assert.rejects(
     verifyGatewayAttestation(jwt, {
-      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
       tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
     }),
     /TLS cert mismatch/,
@@ -263,10 +266,103 @@ test("verify: explicit policy.certSha256 mismatch raises", async () => {
   const jwt = await makeJwt(kp, await goodClaims());
   await assert.rejects(
     verifyGatewayAttestation(jwt, {
-      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null, certSha256: "0".repeat(64) },
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null, certSha256: "0".repeat(64) },
       tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
     }),
     /policy pin/,
+  );
+});
+
+test("verify: policy pinning neither image_digest nor image_reference raises", async () => {
+  const kp = await genKeypair();
+  const jwt = await makeJwt(kp, await goodClaims());
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /pins neither imageDigest nor imageReference/,
+  );
+});
+
+test("verify: non-production CVM (dbgstat != disabled-since-boot) raises", async () => {
+  const kp = await genKeypair();
+  const claims = await goodClaims();
+  claims.dbgstat = "enabled"; // debug-booted CVM — confidentiality void
+  const jwt = await makeJwt(kp, claims);
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /non-production Confidential Space VM/,
+  );
+});
+
+test("verify: missing dbgstat raises under default requireProductionCvm", async () => {
+  const kp = await genKeypair();
+  const claims = await goodClaims();
+  delete claims.dbgstat;
+  const jwt = await makeJwt(kp, claims);
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /non-production Confidential Space VM/,
+  );
+});
+
+test("verify: debug CVM accepted when requireProductionCvm is false", async () => {
+  const kp = await genKeypair();
+  const claims = await goodClaims();
+  claims.dbgstat = "enabled";
+  const jwt = await makeJwt(kp, claims);
+  const result = await verifyGatewayAttestation(jwt, {
+    policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+    tlsCertDer: FAKE_CERT, requireProductionCvm: false, jwks: { keys: [await publicJwk(kp)] },
+  });
+  assert.equal(result.imageDigest, "sha256:abc123");
+});
+
+test("verify: dbgstat under submods.confidential_space is honored", async () => {
+  const kp = await genKeypair();
+  const claims = await goodClaims();
+  delete claims.dbgstat;
+  claims.submods.confidential_space = { dbgstat: "disabled-since-boot" };
+  const jwt = await makeJwt(kp, claims);
+  const result = await verifyGatewayAttestation(jwt, {
+    policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+    tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+  });
+  assert.equal(result.connectionBound, true);
+});
+
+test("verify: jwk.alg present but not RS256 raises", async () => {
+  const kp = await genKeypair();
+  const jwt = await makeJwt(kp, await goodClaims());
+  const jwk = await publicJwk(kp);
+  jwk.alg = "RS512";
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [jwk] },
+    }),
+    /JWK alg .* is not RS256/,
+  );
+});
+
+test("verify: jwk.use present but not 'sig' raises", async () => {
+  const kp = await genKeypair();
+  const jwt = await makeJwt(kp, await goodClaims());
+  const jwk = await publicJwk(kp);
+  jwk.use = "enc";
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [jwk] },
+    }),
+    /JWK use .* is not 'sig'/,
   );
 });
 

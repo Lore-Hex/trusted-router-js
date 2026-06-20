@@ -10,6 +10,19 @@ export interface AttestationPolicy {
   certSha256?: string | null;
 }
 
+export interface Jwk {
+  kid: string;
+  kty: string;
+  n: string;
+  e: string;
+  alg?: string;
+  use?: string;
+}
+
+export interface Jwks {
+  keys: Jwk[];
+}
+
 export interface GatewayAttestation {
   certSha256: string;
   imageDigest: string;
@@ -18,6 +31,7 @@ export interface GatewayAttestation {
   expiresAt: number | null;
   issuer: string | null;
   audience: string;
+  connectionBound: boolean;
   rawClaims: Record<string, unknown>;
 }
 
@@ -35,8 +49,9 @@ export declare function verifyGatewayAttestation(
     policy: AttestationPolicy;
     nonceHex?: string | null;
     tlsCertDer?: Uint8Array | null;
-    jwks?: { keys: Array<Record<string, unknown>> } | null;
+    jwks?: Jwks | null;
     jwksUrl?: string;
+    requireProductionCvm?: boolean;
     fetchImpl?: typeof fetch;
   },
 ): Promise<GatewayAttestation>;

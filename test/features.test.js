@@ -17,6 +17,8 @@ import {
   BadRequestError,
   DEFAULT_API_BASE_URL,
   EndpointNotSupportedError,
+  FUSION_FREEDOM_FALLBACK_FINALS,
+  FUSION_FREEDOM_FALLBACK_JUDGES,
   InternalError,
   NotFoundError,
   PermissionDeniedError,
@@ -683,6 +685,114 @@ test("collectCompletion: ignores chunks with no choices and non-string content",
   assert.equal(out.choices[0].finish_reason, "length");
 });
 
+test("collectCompletion: aggregates fragmented tool_call deltas (content null)", () => {
+  const out = collectCompletion([
+    {
+      id: "a",
+      choices: [
+        {
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call_1",
+                type: "function",
+                function: { name: "get_weather", arguments: '{"ci' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      id: "b",
+      choices: [
+        {
+          delta: {
+            tool_calls: [{ index: 0, function: { arguments: 'ty":"NYC"}' } }],
+          },
+        },
+      ],
+    },
+    {
+      id: "c",
+      choices: [{ delta: {}, finish_reason: "tool_calls" }],
+    },
+  ]);
+  // a turn that is only tool calls has null content
+  assert.equal(out.choices[0].message.content, null);
+  assert.equal(out.choices[0].finish_reason, "tool_calls");
+  const toolCalls = out.choices[0].message.tool_calls;
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0].index, 0);
+  assert.equal(toolCalls[0].id, "call_1");
+  assert.equal(toolCalls[0].type, "function");
+  assert.equal(toolCalls[0].function.name, "get_weather");
+  // fragments concatenated in arrival order
+  assert.equal(toolCalls[0].function.arguments, '{"city":"NYC"}');
+});
+
+test("collectCompletion: sorts multiple tool_calls by index and carries usage", () => {
+  const out = collectCompletion([
+    {
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 1, id: "second", function: { name: "b", arguments: "{}" } },
+              { index: 0, id: "first", function: { name: "a", arguments: "{}" } },
+            ],
+          },
+        },
+      ],
+    },
+    {
+      choices: [{ delta: {}, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+    },
+  ]);
+  const toolCalls = out.choices[0].message.tool_calls;
+  assert.deepEqual(
+    toolCalls.map((tc) => tc.index),
+    [0, 1],
+  );
+  assert.equal(toolCalls[0].id, "first");
+  assert.equal(toolCalls[1].id, "second");
+  assert.deepEqual(out.usage, {
+    prompt_tokens: 11,
+    completion_tokens: 7,
+    total_tokens: 18,
+  });
+});
+
+test("collectCompletion: trailing usage frame is captured alongside text", () => {
+  const out = collectCompletion([
+    { id: "x", choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] },
+    {
+      id: "x",
+      choices: [],
+      usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+    },
+  ]);
+  assert.equal(out.choices[0].message.content, "hi");
+  assert.equal(out.choices[0].message.tool_calls, undefined);
+  assert.deepEqual(out.usage, {
+    prompt_tokens: 3,
+    completion_tokens: 1,
+    total_tokens: 4,
+  });
+});
+
+test("FUSION_FREEDOM_FALLBACK_FINALS export mirrors the Python list", () => {
+  assert.deepEqual(
+    [...FUSION_FREEDOM_FALLBACK_FINALS],
+    [...FUSION_FREEDOM_FALLBACK_JUDGES],
+  );
+  assert.equal(FUSION_FREEDOM_FALLBACK_FINALS[0], "minimax/minimax-m3");
+  assert.equal(FUSION_FREEDOM_FALLBACK_FINALS.length, 5);
+});
+
 // ---- Anthropic + Anthropic chat path: ensure stream= true is set ------
 
 test("chat path body includes stream:true", async () => {
@@ -701,4 +811,43 @@ test("chat path body includes stream:true", async () => {
   await c.chatCompletions({ messages: [{ role: "user", content: "x" }] });
   assert.equal(body.stream, true);
   assert.equal(body.model, AUTO_MODEL);
+});
+
+test("chatCompletions (collecting path) requests a trailing usage frame", async () => {
+  let body;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(
+        'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n",
+      );
+    },
+    maxRetries: 0,
+  });
+  await c.chatCompletions({ messages: [{ role: "user", content: "x" }] });
+  assert.equal(body.stream, true);
+  assert.equal(body.stream_options.include_usage, true);
+});
+
+test("chatCompletions does not clobber a caller-supplied stream_options", async () => {
+  let body;
+  const c = new TrustedRouter({
+    apiKey: "k",
+    fetchImpl: async (_url, init) => {
+      body = JSON.parse(init.body);
+      return sseResponse(
+        'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n' +
+        "data: [DONE]\n\n",
+      );
+    },
+    maxRetries: 0,
+  });
+  await c.chatCompletions({
+    messages: [{ role: "user", content: "x" }],
+    stream_options: { include_usage: false },
+  });
+  // caller override wins over the defaulted-on value
+  assert.equal(body.stream_options.include_usage, false);
 });

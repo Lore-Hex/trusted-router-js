@@ -72,17 +72,26 @@ export async function verifyGatewayAttestation(document, {
   tlsCertDer = null,
   jwks = null,
   jwksUrl = GCP_JWKS_URI,
+  requireProductionCvm = true,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!policy) {
     throw new AttestationVerificationError("policy is required");
+  }
+  // A policy that pins neither image_digest nor image_reference would let
+  // checkClaims skip image binding entirely — a misconfiguration. Fail closed.
+  if (policy.imageDigest == null && policy.imageReference == null) {
+    throw new AttestationVerificationError(
+      "policy pins neither imageDigest nor imageReference; " +
+      "refusing to run an image-unbound attestation verification",
+    );
   }
   const { header, payload, signingInput, signature } = parseJwt(document);
   if (!jwks) {
     jwks = await fetchJwks(jwksUrl, fetchImpl);
   }
   await verifyRs256(jwks, header, signingInput, signature);
-  return await checkClaims(payload, { policy, nonceHex, tlsCertDer });
+  return await checkClaims(payload, { policy, nonceHex, tlsCertDer, requireProductionCvm });
 }
 
 // ---- internals ---------------------------------------------------------
@@ -156,6 +165,16 @@ async function verifyRs256(jwks, header, signingInput, signature) {
   if (jwk.kty !== "RSA") {
     throw new AttestationVerificationError("expected RSA key in JWKS");
   }
+  if (jwk.alg != null && jwk.alg !== "RS256") {
+    throw new AttestationVerificationError(
+      `JWK alg ${JSON.stringify(jwk.alg)} is not RS256`,
+    );
+  }
+  if (jwk.use != null && jwk.use !== "sig") {
+    throw new AttestationVerificationError(
+      `JWK use ${JSON.stringify(jwk.use)} is not 'sig'`,
+    );
+  }
   let key;
   try {
     key = await crypto.subtle.importKey(
@@ -179,7 +198,7 @@ async function verifyRs256(jwks, header, signingInput, signature) {
   }
 }
 
-async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
+async function checkClaims(claims, { policy, nonceHex, tlsCertDer, requireProductionCvm = true }) {
   const now = Math.floor(Date.now() / 1000);
   if (typeof claims.exp === "number" && claims.exp <= now) {
     throw new AttestationVerificationError(
@@ -204,13 +223,13 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
   const imageDigest = submods.image_digest || "";
   const imageReference = submods.image_reference || "";
 
-  if (policy.imageDigest && imageDigest !== policy.imageDigest) {
+  if (policy.imageDigest && !safeEq(imageDigest, policy.imageDigest)) {
     throw new AttestationVerificationError(
       `image_digest mismatch: workload=${JSON.stringify(imageDigest)}, ` +
       `policy=${JSON.stringify(policy.imageDigest)}`,
     );
   }
-  if (policy.imageReference && imageReference !== policy.imageReference) {
+  if (policy.imageReference && !safeEq(imageReference, policy.imageReference)) {
     throw new AttestationVerificationError(
       `image_reference mismatch: workload=${JSON.stringify(imageReference)}, ` +
       `policy=${JSON.stringify(policy.imageReference)}`,
@@ -241,19 +260,35 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
   }
   certSha = certSha.toLowerCase();
 
+  let connectionBound = false;
   if (tlsCertDer) {
     const actual = await sha256Hex(tlsCertDer);
-    if (actual !== certSha) {
+    if (!safeEq(actual, certSha)) {
       throw new AttestationVerificationError(
         `TLS cert mismatch: connection=${JSON.stringify(actual)}, JWT=${JSON.stringify(certSha)}`,
       );
     }
+    connectionBound = true;
   }
 
-  if (policy.certSha256 && certSha !== policy.certSha256.toLowerCase()) {
+  if (policy.certSha256 && !safeEq(certSha, policy.certSha256.toLowerCase())) {
     throw new AttestationVerificationError(
       "JWT-committed cert SHA-256 doesn't match policy pin",
     );
+  }
+
+  // Confidentiality guarantee: reject a debug-booted CVM. `dbgstat` lives
+  // top-level or under submods.confidential_space depending on CSP token
+  // version; only 'disabled-since-boot' means memory encryption held.
+  if (requireProductionCvm) {
+    const cs = (claims.submods || {}).confidential_space || {};
+    const dbgstat = claims.dbgstat || cs.dbgstat;
+    if (dbgstat !== "disabled-since-boot") {
+      throw new AttestationVerificationError(
+        `non-production Confidential Space VM (dbgstat=${JSON.stringify(dbgstat)}); ` +
+        "expected 'disabled-since-boot'",
+      );
+    }
   }
 
   return {
@@ -264,6 +299,7 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
     expiresAt: typeof claims.exp === "number" ? claims.exp : null,
     issuer: claims.iss ?? null,
     audience: policy.audience,
+    connectionBound,
     rawClaims: claims,
   };
 }
@@ -281,4 +317,18 @@ async function sha256Hex(bytes) {
   let hex = "";
   for (const b of arr) hex += b.toString(16).padStart(2, "0");
   return hex;
+}
+
+// Constant-time string comparison (mirrors Python's _safe_eq via
+// hmac.compare_digest). Length mismatch still runs the full loop over the
+// longer string so timing doesn't leak which input was shorter.
+function safeEq(a, b) {
+  const sa = String(a);
+  const sb = String(b);
+  const len = Math.max(sa.length, sb.length);
+  let diff = sa.length ^ sb.length;
+  for (let i = 0; i < len; i++) {
+    diff |= (sa.charCodeAt(i) || 0) ^ (sb.charCodeAt(i) || 0);
+  }
+  return diff === 0;
 }

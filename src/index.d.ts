@@ -2,11 +2,14 @@ export declare const VERSION: string;
 export declare const DEFAULT_API_BASE_URL: "https://api.quillrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
+export declare const DEFAULT_REQUEST_TIMEOUT_MS: number;
+export declare const DEFAULT_FUSION_TIMEOUT_MS: number;
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
+export declare const FUSION_FREEDOM_FALLBACK_FINALS: ReadonlyArray<string>;
 export declare const REGION_HOSTS: Readonly<Record<string, string>>;
 export declare const DEFAULT_FAILOVER_REGIONS: ReadonlyArray<string>;
 
@@ -73,6 +76,8 @@ export interface TrustedRouterOptions {
   headers?: Record<string, string>;
   workspaceId?: string | null;
   maxRetries?: number;
+  /** Default per-call timeout in milliseconds. Defaults to DEFAULT_REQUEST_TIMEOUT_MS. */
+  timeout?: number;
   regionalFailover?: boolean | null;
   failoverRegions?: string[] | readonly string[] | null;
 }
@@ -146,7 +151,7 @@ export interface FusionRequest extends PerCallOptions, FusionToolOptions {
   [extra: string]: unknown;
 }
 
-export interface EmbeddingsRequest extends PerCallOptions {
+export interface EmbeddingsRequest {
   model: string;
   input: string | string[] | number[] | number[][];
   encodingFormat?: string | null;
@@ -154,7 +159,7 @@ export interface EmbeddingsRequest extends PerCallOptions {
   user?: string | null;
 }
 
-export interface MessagesRequest extends PerCallOptions {
+export interface MessagesRequest {
   model: string;
   messages: Array<Record<string, unknown>>;
   maxTokens?: number;
@@ -278,6 +283,7 @@ export declare class TrustedRouter {
   fetch: TrustedRouterFetch;
   defaultHeaders: Record<string, string>;
   maxRetries: number;
+  timeout: number;
   baseUrls: string[];
   constructor(options?: TrustedRouterOptions);
 
