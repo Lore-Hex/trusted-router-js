@@ -5,6 +5,8 @@ export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/statu
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
+export declare const SOCRATES_MODEL: "trustedrouter/socrates-1.0";
+export declare const ADVISOR_MODEL: "trustedrouter/advisor";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
 export declare const REGION_HOSTS: Readonly<Record<string, string>>;
@@ -36,6 +38,22 @@ export interface FusionTool {
 }
 
 export declare function fusionTool(options?: FusionToolOptions): FusionTool;
+
+export interface AdvisorToolOptions {
+  depth?: number | null;
+  workerModels?: string[] | null;
+  advisorModels?: string[] | null;
+  maxGetAdviceCalls?: number | null;
+  advisorMaxTokens?: number | null;
+  advisorTimeoutMs?: number | null;
+}
+
+export interface AdvisorTool {
+  type: "trustedrouter:advisor";
+  parameters: Record<string, unknown>;
+}
+
+export declare function advisorTool(options?: AdvisorToolOptions): AdvisorTool;
 
 // ---- error hierarchy ----------------------------------------------------
 
@@ -143,6 +161,12 @@ export interface ChatRequest extends PerCallOptions {
 
 export interface FusionRequest extends PerCallOptions, FusionToolOptions {
   messages: Array<Record<string, unknown>>;
+  [extra: string]: unknown;
+}
+
+export interface SocratesRequest extends PerCallOptions, AdvisorToolOptions {
+  messages: Array<Record<string, unknown>>;
+  model?: string;
   [extra: string]: unknown;
 }
 
@@ -297,6 +321,7 @@ export declare class TrustedRouter {
   chatCompletionsText(req?: ChatRequest): AsyncIterable<string>;
   chatCompletionsRawStream(req?: ChatRequest): AsyncIterable<Uint8Array>;
   fusion(req?: FusionRequest): Promise<ChatCompletion>;
+  socrates(req?: SocratesRequest): Promise<ChatCompletion>;
 
   models(): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;

@@ -22,6 +22,8 @@ export const DEFAULT_STATUS_URL =
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
 export const FUSION_MODEL = "trustedrouter/fusion";
+export const SOCRATES_MODEL = "trustedrouter/socrates-1.0";
+export const ADVISOR_MODEL = "trustedrouter/advisor";
 
 // Recommended panel + judge fallback chain for maximum willingness to answer.
 // Use gateway-supported latest aliases where possible so examples survive
@@ -67,6 +69,31 @@ export function fusionTool({
   if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
   if (maxToolCalls !== null) parameters.max_tool_calls = maxToolCalls;
   return { type: "trustedrouter:fusion", parameters };
+}
+
+/**
+ * Build a `trustedrouter:advisor` tool spec for Socrates orchestration. The
+ * gateway consumes this config and gives the worker model a private
+ * `_trustedrouter_get_advice` tool.
+ */
+export function advisorTool({
+  depth = null,
+  workerModels = null,
+  advisorModels = null,
+  maxGetAdviceCalls = null,
+  advisorMaxTokens = null,
+  advisorTimeoutMs = null,
+} = {}) {
+  const parameters = {};
+  if (depth !== null) parameters.depth = depth;
+  if (workerModels !== null) parameters.worker_models = workerModels;
+  if (advisorModels !== null) parameters.advisor_models = advisorModels;
+  if (maxGetAdviceCalls !== null) {
+    parameters.max_get_advice_calls = maxGetAdviceCalls;
+  }
+  if (advisorMaxTokens !== null) parameters.advisor_max_tokens = advisorMaxTokens;
+  if (advisorTimeoutMs !== null) parameters.advisor_timeout_ms = advisorTimeoutMs;
+  return { type: "trustedrouter:advisor", parameters };
 }
 
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
@@ -641,6 +668,41 @@ export class TrustedRouter {
           preset,
         }),
       ],
+      ...params,
+    });
+  }
+
+  /**
+   * Run a request through TrustedRouter Socrates: a fast worker model can ask
+   * a stronger private advisor model for guidance when it is stuck.
+   */
+  async socrates({
+    messages,
+    depth = null,
+    workerModels = null,
+    advisorModels = null,
+    maxGetAdviceCalls = null,
+    advisorMaxTokens = null,
+    advisorTimeoutMs = null,
+    model = SOCRATES_MODEL,
+    ...params
+  } = {}) {
+    const tools = [...(params.tools ?? [])];
+    delete params.tools;
+    tools.push(
+      advisorTool({
+        depth,
+        workerModels,
+        advisorModels,
+        maxGetAdviceCalls,
+        advisorMaxTokens,
+        advisorTimeoutMs,
+      }),
+    );
+    return this.chatCompletions({
+      model,
+      messages,
+      tools,
       ...params,
     });
   }
