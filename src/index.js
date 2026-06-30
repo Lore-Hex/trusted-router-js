@@ -96,6 +96,92 @@ export function advisorTool({
   return { type: "trustedrouter:advisor", parameters };
 }
 
+const ADVISOR_MODELS = Object.freeze(new Set([ADVISOR_MODEL]));
+const FUSION_PRIMITIVE_MODELS = Object.freeze(
+  new Set([
+    "trustedrouter/fusion",
+    "trustedrouter/fusion-code",
+    "trustedrouter/synth",
+    "trustedrouter/synth-code",
+    "trustedrouter/selector",
+    "trustedrouter/mapreduce",
+  ]),
+);
+
+function chatCompletionBody({ model, messages, params }) {
+  const bodyParams = { ...params };
+  const tools = [...(bodyParams.tools ?? [])];
+  delete bodyParams.tools;
+
+  const advisor = {};
+  for (const [sdkKey, gatewayKey] of [
+    ["depth", "depth"],
+    ["workerModels", "worker_models"],
+    ["advisorModels", "advisor_models"],
+    ["maxGetAdviceCalls", "max_get_advice_calls"],
+    ["advisorMaxTokens", "advisor_max_tokens"],
+    ["advisorTimeoutMs", "advisor_timeout_ms"],
+  ]) {
+    if (Object.hasOwn(bodyParams, sdkKey)) {
+      if (bodyParams[sdkKey] !== null && bodyParams[sdkKey] !== undefined) {
+        advisor[gatewayKey] = bodyParams[sdkKey];
+      }
+      delete bodyParams[sdkKey];
+    }
+  }
+  if (Object.keys(advisor).length > 0) {
+    tools.push({ type: "trustedrouter:advisor", parameters: advisor });
+  }
+
+  const fusion = {};
+  for (const [sdkKey, gatewayKey] of [
+    ["analysisModels", "analysis_models"],
+    ["judgeModel", "model"],
+    ["selectionStrategy", "selection_strategy"],
+    ["fallbackJudges", "fallback_judges"],
+    ["fallbackFinalModels", "fallback_final_models"],
+    ["maxCompletionTokens", "max_completion_tokens"],
+    ["maxToolCalls", "max_tool_calls"],
+    ["preset", "preset"],
+    ["panelPrompt", "panel_prompt"],
+    ["synthesisPrompt", "synthesis_prompt"],
+    ["finalPrompt", "final_prompt"],
+    ["selectorModels", "selector_models"],
+    ["selectorModel", "selector_model"],
+    ["selectorPrompt", "selector_prompt"],
+    ["mapperModels", "mapper_models"],
+    ["mapperModel", "mapper_model"],
+    ["mapperPrompt", "mapper_prompt"],
+    ["parallelModels", "parallel_models"],
+    ["parallelModel", "parallel_model"],
+    ["parallelPrompt", "parallel_prompt"],
+    ["reducerModels", "reducer_models"],
+    ["reducerModel", "reducer_model"],
+    ["reducerPrompt", "reducer_prompt"],
+  ]) {
+    if (Object.hasOwn(bodyParams, sdkKey)) {
+      if (bodyParams[sdkKey] !== null && bodyParams[sdkKey] !== undefined) {
+        fusion[gatewayKey] = bodyParams[sdkKey];
+      }
+      delete bodyParams[sdkKey];
+    }
+  }
+  if (Object.keys(fusion).length > 0) {
+    tools.push({ type: "trustedrouter:fusion", parameters: fusion });
+  }
+
+  const normalizedModel = String(model || "").trim().toLowerCase();
+  const out = { model, messages, stream: true, ...bodyParams };
+  if (
+    tools.length > 0 ||
+    ADVISOR_MODELS.has(normalizedModel) ||
+    FUSION_PRIMITIVE_MODELS.has(normalizedModel)
+  ) {
+    if (tools.length > 0) out.tools = tools;
+  }
+  return out;
+}
+
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
 // aliases the apex because the regional subdomain isn't published yet.
 export const REGION_HOSTS = Object.freeze({
@@ -581,7 +667,7 @@ export class TrustedRouter {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
-      body: { model, messages, stream: true, ...params },
+      body: chatCompletionBody({ model, messages, params }),
       apiKey,
       extraHeaders,
       idempotencyKey: requestIdempotencyKey,
@@ -618,7 +704,7 @@ export class TrustedRouter {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
-      body: { model, messages, stream: true, ...params },
+      body: chatCompletionBody({ model, messages, params }),
       apiKey,
       extraHeaders,
       idempotencyKey: requestIdempotencyKey,

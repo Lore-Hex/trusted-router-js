@@ -29,7 +29,7 @@ export interface FusionToolOptions {
   fallbackFinalModels?: string[] | null;
   maxCompletionTokens?: number | null;
   maxToolCalls?: number | null;
-  preset?: "quality" | "budget" | null;
+  preset?: "quality" | "budget" | "frontier" | null;
 }
 
 export interface FusionTool {
@@ -156,6 +156,36 @@ export interface ChatCompletionChunk {
 export interface ChatRequest extends PerCallOptions {
   model?: string;
   messages: Array<Record<string, unknown>>;
+  depth?: number | null;
+  workerModels?: string[] | null;
+  advisorModels?: string[] | null;
+  maxGetAdviceCalls?: number | null;
+  advisorMaxTokens?: number | null;
+  advisorTimeoutMs?: number | null;
+  analysisModels?: string[] | null;
+  /** judge / synthesis model for direct trustedrouter/synth calls */
+  judgeModel?: string | null;
+  selectionStrategy?: FusionSelectionStrategy | string | null;
+  fallbackJudges?: string[] | null;
+  fallbackFinalModels?: string[] | null;
+  maxCompletionTokens?: number | null;
+  maxToolCalls?: number | null;
+  preset?: "quality" | "budget" | "frontier" | string | null;
+  panelPrompt?: string | null;
+  synthesisPrompt?: string | null;
+  finalPrompt?: string | null;
+  selectorModels?: string[] | null;
+  selectorModel?: string | null;
+  selectorPrompt?: string | null;
+  mapperModels?: string[] | null;
+  mapperModel?: string | null;
+  mapperPrompt?: string | null;
+  parallelModels?: string[] | null;
+  parallelModel?: string | null;
+  parallelPrompt?: string | null;
+  reducerModels?: string[] | null;
+  reducerModel?: string | null;
+  reducerPrompt?: string | null;
   [extra: string]: unknown;
 }
 
