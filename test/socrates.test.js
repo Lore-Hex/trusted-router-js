@@ -1,5 +1,5 @@
 /**
- * Coverage for the TrustedRouter Socrates helper and advisor tool builder.
+ * Coverage for direct advisor orchestration options and tool building.
  */
 
 import assert from "node:assert/strict";
@@ -7,7 +7,6 @@ import test from "node:test";
 
 import {
   ADVISOR_MODEL,
-  SOCRATES_MODEL,
   TrustedRouter,
   advisorTool,
 } from "../src/index.js";
@@ -47,7 +46,7 @@ test("advisorTool: omits everything when no options given", () => {
   assert.deepEqual(advisorTool().parameters, {});
 });
 
-test("socrates(): posts trustedrouter/socrates-1.0 with advisor tool", async () => {
+test("chatCompletions(): direct socrates model lifts advisor options into tool", async () => {
   let body;
   const c = new TrustedRouter({
     apiKey: "k",
@@ -57,20 +56,21 @@ test("socrates(): posts trustedrouter/socrates-1.0 with advisor tool", async () 
       return sseResponse(DONE);
     },
   });
-  const result = await c.socrates({
+  const result = await c.chatCompletions({
+    model: "trustedrouter/socrates-1.0",
     messages: [{ role: "user", content: "review this migration" }],
     depth: 2,
-    advisorModels: [ADVISOR_MODEL],
+    advisorModels: ["anthropic/claude-opus-4.8"],
     maxGetAdviceCalls: 1,
   });
 
-  assert.equal(body.model, SOCRATES_MODEL);
+  assert.equal(body.model, "trustedrouter/socrates-1.0");
   assert.equal(body.stream, true);
   assert.equal(body.tools.length, 1);
   assert.equal(body.tools[0].type, "trustedrouter:advisor");
   assert.deepEqual(body.tools[0].parameters, {
     depth: 2,
-    advisor_models: [ADVISOR_MODEL],
+    advisor_models: ["anthropic/claude-opus-4.8"],
     max_get_advice_calls: 1,
   });
   assert.equal(result.choices[0].message.content, "ok");
@@ -143,7 +143,7 @@ test("chatCompletions(): lifts direct synth options into fusion tool config", as
   assert.equal(body.judgeModel, undefined);
 });
 
-test("socrates(): preserves caller tools before advisor config", async () => {
+test("chatCompletions(): direct socrates model preserves caller tools before advisor config", async () => {
   let body;
   const c = new TrustedRouter({
     apiKey: "k",
@@ -153,9 +153,11 @@ test("socrates(): preserves caller tools before advisor config", async () => {
       return sseResponse(DONE);
     },
   });
-  await c.socrates({
+  await c.chatCompletions({
+    model: "trustedrouter/socrates-1.0",
     messages: [{ role: "user", content: "hi" }],
     tools: [{ type: "function", function: { name: "lookup" } }],
+    workerModels: ["cerebras/gpt-oss-120b"],
   });
 
   assert.equal(body.tools.length, 2);

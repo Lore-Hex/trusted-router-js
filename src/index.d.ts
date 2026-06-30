@@ -5,7 +5,6 @@ export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/statu
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
-export declare const SOCRATES_MODEL: "trustedrouter/socrates-1.0";
 export declare const ADVISOR_MODEL: "trustedrouter/advisor";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
@@ -194,12 +193,6 @@ export interface FusionRequest extends PerCallOptions, FusionToolOptions {
   [extra: string]: unknown;
 }
 
-export interface SocratesRequest extends PerCallOptions, AdvisorToolOptions {
-  messages: Array<Record<string, unknown>>;
-  model?: string;
-  [extra: string]: unknown;
-}
-
 export interface EmbeddingsRequest extends PerCallOptions {
   model: string;
   input: string | string[] | number[] | number[][];
@@ -351,7 +344,6 @@ export declare class TrustedRouter {
   chatCompletionsText(req?: ChatRequest): AsyncIterable<string>;
   chatCompletionsRawStream(req?: ChatRequest): AsyncIterable<Uint8Array>;
   fusion(req?: FusionRequest): Promise<ChatCompletion>;
-  socrates(req?: SocratesRequest): Promise<ChatCompletion>;
 
   models(): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;

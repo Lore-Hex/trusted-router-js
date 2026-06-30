@@ -13,7 +13,7 @@
  * SubtleCrypto is only imported when callers actually need to verify.
  */
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.4";
 export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
@@ -22,7 +22,6 @@ export const DEFAULT_STATUS_URL =
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
 export const FUSION_MODEL = "trustedrouter/fusion";
-export const SOCRATES_MODEL = "trustedrouter/socrates-1.0";
 export const ADVISOR_MODEL = "trustedrouter/advisor";
 
 // Recommended panel + judge fallback chain for maximum willingness to answer.
@@ -72,8 +71,9 @@ export function fusionTool({
 }
 
 /**
- * Build a `trustedrouter:advisor` tool spec for Socrates orchestration. The
- * gateway consumes this config and gives the worker model a private
+ * Build a `trustedrouter:advisor` tool spec. Most callers should pass these
+ * options directly to `chatCompletions({ model, ... })`; the SDK lifts them
+ * into this gateway config and gives the worker model a private
  * `_trustedrouter_get_advice` tool.
  */
 export function advisorTool({
@@ -754,41 +754,6 @@ export class TrustedRouter {
           preset,
         }),
       ],
-      ...params,
-    });
-  }
-
-  /**
-   * Run a request through TrustedRouter Socrates: a fast worker model can ask
-   * a stronger private advisor model for guidance when it is stuck.
-   */
-  async socrates({
-    messages,
-    depth = null,
-    workerModels = null,
-    advisorModels = null,
-    maxGetAdviceCalls = null,
-    advisorMaxTokens = null,
-    advisorTimeoutMs = null,
-    model = SOCRATES_MODEL,
-    ...params
-  } = {}) {
-    const tools = [...(params.tools ?? [])];
-    delete params.tools;
-    tools.push(
-      advisorTool({
-        depth,
-        workerModels,
-        advisorModels,
-        maxGetAdviceCalls,
-        advisorMaxTokens,
-        advisorTimeoutMs,
-      }),
-    );
-    return this.chatCompletions({
-      model,
-      messages,
-      tools,
       ...params,
     });
   }
