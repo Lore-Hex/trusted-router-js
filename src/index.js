@@ -205,6 +205,25 @@ export function regionBaseUrl(region) {
   return `https://${REGION_HOSTS[region]}/v1`;
 }
 
+function modelsPath({
+  openWeights = null,
+  providerJurisdiction = null,
+  providerRegion = null,
+} = {}) {
+  const params = new URLSearchParams();
+  if (openWeights !== null && openWeights !== undefined) {
+    params.set("open_weights", openWeights ? "true" : "false");
+  }
+  if (providerJurisdiction) {
+    params.set("provider[jurisdiction]", providerJurisdiction);
+  }
+  if (providerRegion) {
+    params.set("provider[region]", providerRegion);
+  }
+  const qs = params.toString();
+  return qs ? `/models?${qs}` : "/models";
+}
+
 // ---- error hierarchy ---------------------------------------------------
 
 export class TrustedRouterError extends Error {
@@ -760,8 +779,8 @@ export class TrustedRouter {
 
   // ---- catalog / metadata ---------------------------------------------
 
-  models() {
-    return this.request("GET", "/models");
+  models(options = {}) {
+    return this.request("GET", modelsPath(options));
   }
   providers() {
     return this.request("GET", "/providers");

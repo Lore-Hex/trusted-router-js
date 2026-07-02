@@ -109,6 +109,12 @@ export interface RequestOptions
   body?: BodyInit | Record<string, unknown> | null;
 }
 
+export interface ModelListOptions {
+  openWeights?: boolean | null;
+  providerJurisdiction?: string | null;
+  providerRegion?: string | null;
+}
+
 export interface ChatMessage {
   role: string;
   content: string | null;
@@ -345,7 +351,7 @@ export declare class TrustedRouter {
   chatCompletionsRawStream(req?: ChatRequest): AsyncIterable<Uint8Array>;
   fusion(req?: FusionRequest): Promise<ChatCompletion>;
 
-  models(): Promise<Record<string, unknown>>;
+  models(options?: ModelListOptions): Promise<Record<string, unknown>>;
   providers(): Promise<Record<string, unknown>>;
   regions(): Promise<Record<string, unknown>>;
   credits(options?: {

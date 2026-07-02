@@ -30,6 +30,33 @@ test("normalizes base URL and sends bearer token", async () => {
   assert.equal(calls[0].init.headers.get("authorization"), "Bearer sk-tr-test");
 });
 
+test("models accepts catalog filters", async () => {
+  const calls = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(
+    await client.models({
+      openWeights: true,
+      providerJurisdiction: "us",
+      providerRegion: "eu",
+    }),
+    { data: [] },
+  );
+  assert.equal(
+    calls[0],
+    `${DEFAULT_API_BASE_URL}/models?open_weights=true&provider%5Bjurisdiction%5D=us&provider%5Bregion%5D=eu`,
+  );
+});
+
 test("sends default and per-call workspace selectors", async () => {
   const seen = [];
   const client = new TrustedRouter({
