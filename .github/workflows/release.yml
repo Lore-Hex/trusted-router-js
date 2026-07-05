@@ -39,4 +39,7 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+      # npm >= 11.5 is required for OIDC trusted publishing; node 20 ships npm 10,
+      # which silently falls back to setup-node's placeholder token and 404s.
+      - run: npm install -g npm@latest
       - run: npm publish --provenance
