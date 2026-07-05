@@ -1,5 +1,6 @@
 export declare const VERSION: string;
-export declare const DEFAULT_API_BASE_URL: "https://api.quillrouter.com/v1";
+export declare const DEFAULT_API_BASE_URL: "https://api.trustedrouter.com/v1";
+export declare const DEFAULT_CONTROL_BASE_URL: "https://trustedrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const AUTO_MODEL: "trustedrouter/auto";
@@ -85,6 +86,7 @@ export type TrustedRouterFetch = typeof fetch;
 export interface TrustedRouterOptions {
   apiKey?: string | null;
   baseUrl?: string | null;
+  controlBaseUrl?: string | null;
   region?: keyof typeof REGION_HOSTS | string | null;
   fetchImpl?: TrustedRouterFetch;
   headers?: Record<string, string>;
@@ -327,6 +329,7 @@ export interface UserInfoResponse {
 export declare class TrustedRouter {
   apiKey: string | null;
   baseUrl: string;
+  controlBaseUrl: string;
   region: string | null;
   fetch: TrustedRouterFetch;
   defaultHeaders: Record<string, string>;

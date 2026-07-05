@@ -12,7 +12,8 @@ the hosted, attested LLM router that lets you point one OpenAI-shaped client
 at every provider (Anthropic, OpenAI, Google Vertex, Gemini, DeepSeek,
 Mistral, Cerebras) and *prove* the prompt path doesn't log.
 
-- Gateway: `https://api.quillrouter.com/v1`
+- Inference API: `https://api.trustedrouter.com/v1`
+- Control API: `https://trustedrouter.com/v1`
 - Trust release: `https://trust.trustedrouter.com`
 - Source: `https://github.com/Lore-Hex/trusted-router-js`
 - License: Apache-2.0
@@ -172,8 +173,11 @@ const client = new TrustedRouter({ apiKey: "sk-tr-v1-...", region: "europe-west4
 ```
 
 The full list lives in `REGION_HOSTS`. Pass `region` for known regions, or
-`baseUrl` for a custom endpoint (e.g. a self-hosted gateway). Passing both
-is a configuration error.
+`baseUrl` for a custom inference endpoint (e.g. a self-hosted gateway).
+Passing both is a configuration error. Metadata, OAuth, billing, credits,
+activity, and broadcast helpers use the control plane at
+`DEFAULT_CONTROL_BASE_URL`; override it with `controlBaseUrl` only when you
+need a custom control endpoint.
 
 ## Typed errors
 
@@ -216,6 +220,9 @@ Disable with `maxRetries: 0`:
 ```js
 const client = new TrustedRouter({ apiKey: "...", maxRetries: 0 });
 ```
+
+Regional failover applies only to inference routes. Control-plane calls retry
+on the configured control host without rotating through inference regions.
 
 ## Per-call extras
 
@@ -286,11 +293,11 @@ const client = new TrustedRouter({
 ## Other endpoints
 
 ```js
-client.models();             // OpenAI-shape catalog
-client.providers();          // provider list
-client.regions();            // deployed regions
-client.credits({ workspaceId: "ws_..." }); // current prepaid balance for a workspace
-client.activity({ since: "2026-01-01", limit: 50 });
+client.models();             // OpenAI-shape catalog via the control plane
+client.providers();          // provider list via the control plane
+client.regions();            // deployed regions via the control plane
+client.credits({ workspaceId: "ws_..." }); // prepaid balance via the control plane
+client.activity({ since: "2026-01-01", limit: 50 }); // control-plane activity
 client.messages({            // Anthropic shape, preserves system + content blocks
   model: "anthropic/claude-3-5-sonnet",
   messages: [{ role: "user", content: "hi" }],
@@ -299,10 +306,8 @@ client.messages({            // Anthropic shape, preserves system + content bloc
 client.billingCheckout({ amount: 25, paymentMethod: "stablecoin", idempotencyKey: "..." });
 ```
 
-`client.embeddings(...)` is present for API compatibility, but the hosted
-TrustedRouter route currently throws `EndpointNotSupportedError` instead of
-returning fake vectors. Use `client.models()` / `/embeddings/models` to inspect
-the future embedding catalog.
+`client.embeddings(...)` uses the attested inference plane. Embedding model
+catalog routes such as `/embeddings/models` are control-plane metadata.
 
 For routes the SDK doesn't wrap, drop down to `client.request(...)`:
 
@@ -317,7 +322,7 @@ await client.request("GET", "/some/new/route", {
 ```bash
 npm install
 npm run check        # syntax check
-npm test             # node --test, ~60 tests
+npm test             # node --test
 ```
 
 CI runs lint + tests on every push to main and PR.

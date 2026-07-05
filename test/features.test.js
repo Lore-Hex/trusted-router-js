@@ -16,6 +16,7 @@ import {
   AuthenticationError,
   BadRequestError,
   DEFAULT_API_BASE_URL,
+  DEFAULT_CONTROL_BASE_URL,
   EndpointNotSupportedError,
   InternalError,
   NotFoundError,
@@ -44,9 +45,17 @@ function sseResponse(body) {
 
 // ---- region shortcut ---------------------------------------------------
 
+test("default base constants split inference and control planes", () => {
+  assert.equal(DEFAULT_API_BASE_URL, "https://api.trustedrouter.com/v1");
+  assert.equal(DEFAULT_CONTROL_BASE_URL, "https://trustedrouter.com/v1");
+});
+
 test("regionBaseUrl returns the right URL for known regions", () => {
-  assert.equal(regionBaseUrl("europe-west4"), "https://api-europe-west4.quillrouter.com/v1");
-  assert.equal(regionBaseUrl("us-central1"), "https://api.quillrouter.com/v1");
+  assert.equal(
+    regionBaseUrl("europe-west4"),
+    "https://api-europe-west4.trustedrouter.com/v1",
+  );
+  assert.equal(regionBaseUrl("us-central1"), DEFAULT_API_BASE_URL);
 });
 
 test("regionBaseUrl throws on unknown region", () => {
@@ -59,7 +68,7 @@ test("REGION_HOSTS is frozen — callers can't mutate it", () => {
 
 test("constructor: region= sets baseUrl + region", () => {
   const c = new TrustedRouter({ region: "europe-west4", fetchImpl: async () => new Response() });
-  assert.equal(c.baseUrl, "https://api-europe-west4.quillrouter.com/v1");
+  assert.equal(c.baseUrl, "https://api-europe-west4.trustedrouter.com/v1");
   assert.equal(c.region, "europe-west4");
 });
 
@@ -73,7 +82,75 @@ test("constructor: passing both region and baseUrl is an error", () => {
 test("constructor: defaults to apex when neither region nor baseUrl given", () => {
   const c = new TrustedRouter({ fetchImpl: async () => new Response() });
   assert.equal(c.baseUrl, DEFAULT_API_BASE_URL);
+  assert.equal(c.controlBaseUrl, DEFAULT_CONTROL_BASE_URL);
   assert.equal(c.region, null);
+});
+
+test("controlBaseUrl override applies to control calls and OAuth URLs", async () => {
+  let seenUrl;
+  const c = new TrustedRouter({
+    controlBaseUrl: "https://control.example/v1/",
+    fetchImpl: async (url) => {
+      seenUrl = url;
+      return jsonResponse(200, { data: [] });
+    },
+  });
+
+  await c.models();
+  assert.equal(seenUrl, "https://control.example/v1/models");
+  assert.equal(
+    c.oauthAuthorizeUrl({ callbackUrl: "https://app.example/callback" }).startsWith(
+      "https://control.example/v1/auth?",
+    ),
+    true,
+  );
+});
+
+test("wrapped methods route to their assigned planes", async () => {
+  const calls = [];
+  const c = new TrustedRouter({
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      calls.push(`${init.method} ${parsed.origin}${parsed.pathname}`);
+      if (parsed.pathname.endsWith("/chat/completions")) {
+        return sseResponse(
+          'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n' +
+          "data: [DONE]\n\n",
+        );
+      }
+      if (parsed.pathname.endsWith("/auth/keys")) {
+        return jsonResponse(200, { key: "sk-tr-v1-delegated", data: {} });
+      }
+      if (parsed.pathname.endsWith("/responses")) {
+        return jsonResponse(200, { id: "resp_1", object: "response" });
+      }
+      return jsonResponse(200, { data: [] });
+    },
+  });
+
+  await c.models();
+  await c.providers();
+  await c.credits();
+  await c.exchangeOAuthKey({ code: "auth_code" });
+  await c.broadcastDestinations();
+  await c.billingCheckout({ amount: 1 });
+  await c.chatCompletions({ messages: [{ role: "user", content: "hi" }] });
+  await c.messages({ model: "anthropic/claude-3-5-sonnet", messages: [] });
+  await c.responses({ input: "hello" });
+  await c.embeddings({ model: "text-embed", input: "hello" });
+
+  assert.deepEqual(calls, [
+    `GET ${DEFAULT_CONTROL_BASE_URL}/models`,
+    `GET ${DEFAULT_CONTROL_BASE_URL}/providers`,
+    `GET ${DEFAULT_CONTROL_BASE_URL}/credits`,
+    `POST ${DEFAULT_CONTROL_BASE_URL}/auth/keys`,
+    `GET ${DEFAULT_CONTROL_BASE_URL}/broadcast/destinations`,
+    `POST ${DEFAULT_CONTROL_BASE_URL}/billing/checkout`,
+    `POST ${DEFAULT_API_BASE_URL}/chat/completions`,
+    `POST ${DEFAULT_API_BASE_URL}/messages`,
+    `POST ${DEFAULT_API_BASE_URL}/responses`,
+    `POST ${DEFAULT_API_BASE_URL}/embeddings`,
+  ]);
 });
 
 // ---- typed errors ------------------------------------------------------
@@ -533,12 +610,15 @@ test("broadcast helpers send workspaceId header and destination body", async () 
   });
   await c.testBroadcastDestination("bdst_1");
 
-  assert.equal(seen[0].url, `${DEFAULT_API_BASE_URL}/broadcast/destinations`);
+  assert.equal(seen[0].url, `${DEFAULT_CONTROL_BASE_URL}/broadcast/destinations`);
   assert.equal(seen[0].workspace, "ws_default");
   assert.equal(seen[1].workspace, "ws_override");
   assert.equal(seen[1].body.include_content, false);
   assert.deepEqual(seen[1].body.headers, { Authorization: "Bearer x" });
-  assert.equal(seen[2].url, `${DEFAULT_API_BASE_URL}/broadcast/destinations/bdst_1/test`);
+  assert.equal(
+    seen[2].url,
+    `${DEFAULT_CONTROL_BASE_URL}/broadcast/destinations/bdst_1/test`,
+  );
 });
 
 test("posthog broadcast destination sends project token in body only", async () => {

@@ -1,7 +1,7 @@
 /**
  * TrustedRouter JavaScript SDK.
  *
- * OpenAI-compatible client for https://api.quillrouter.com/v1.
+ * OpenAI-compatible client for https://api.trustedrouter.com/v1.
  *
  * Mirrors the Python SDK's surface so multi-language teams stay in
  * sync: typed errors, automatic retries with backoff, region pinning,
@@ -13,8 +13,9 @@
  * SubtleCrypto is only imported when callers actually need to verify.
  */
 
-export const VERSION = "0.3.4";
-export const DEFAULT_API_BASE_URL = "https://api.quillrouter.com/v1";
+export const VERSION = "0.4.0";
+export const DEFAULT_API_BASE_URL = "https://api.trustedrouter.com/v1";
+export const DEFAULT_CONTROL_BASE_URL = "https://trustedrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
 export const DEFAULT_STATUS_URL =
@@ -185,9 +186,9 @@ function chatCompletionBody({ model, messages, params }) {
 // Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
 // aliases the apex because the regional subdomain isn't published yet.
 export const REGION_HOSTS = Object.freeze({
-  "us-central1": "api.quillrouter.com",
-  "us-east4": "api-us-east4.quillrouter.com",
-  "europe-west4": "api-europe-west4.quillrouter.com",
+  "us-central1": "api.trustedrouter.com",
+  "us-east4": "api-us-east4.trustedrouter.com",
+  "europe-west4": "api-europe-west4.trustedrouter.com",
 });
 export const DEFAULT_FAILOVER_REGIONS = Object.freeze([
   "us-central1",
@@ -426,6 +427,7 @@ export class TrustedRouter {
   constructor({
     apiKey = null,
     baseUrl = null,
+    controlBaseUrl = null,
     region = null,
     fetchImpl = globalThis.fetch,
     headers = {},
@@ -449,6 +451,10 @@ export class TrustedRouter {
     }
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/+$/, "");
+    this.controlBaseUrl = (controlBaseUrl ?? DEFAULT_CONTROL_BASE_URL).replace(
+      /\/+$/,
+      "",
+    );
     this.region = region;
     this.workspaceId = workspaceId;
     this.fetch = fetchImpl;
@@ -467,6 +473,7 @@ export class TrustedRouter {
 
   async request(method, path, init = {}) {
     const {
+      _baseUrls = null,
       headers = {},
       body,
       apiKey = null,
@@ -486,10 +493,11 @@ export class TrustedRouter {
     });
     const requestBody = serializeBody(body, requestHeaders);
 
+    const baseUrls = _baseUrls ?? this.baseUrls;
     let attempt = 0;
     let baseIndex = 0;
     while (true) {
-      const url = `${this.baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      const url = `${baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
         response = await this._fetchWithTimeout(
@@ -505,7 +513,7 @@ export class TrustedRouter {
       } catch (error) {
         if (error?.name === "AbortError") throw error;
         if (attempt >= this.maxRetries) throw transportError(error);
-        if (baseIndex < this.baseUrls.length - 1) baseIndex += 1;
+        if (baseIndex < baseUrls.length - 1) baseIndex += 1;
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
         continue;
@@ -516,7 +524,7 @@ export class TrustedRouter {
       }
       if (
         isRegionalFailoverable(response.status) &&
-        baseIndex < this.baseUrls.length - 1
+        baseIndex < baseUrls.length - 1
       ) {
         baseIndex += 1;
       }
@@ -539,6 +547,7 @@ export class TrustedRouter {
    */
   async rawRequest(method, path, init = {}) {
     const {
+      _baseUrls = null,
       headers = {},
       body,
       apiKey = null,
@@ -556,10 +565,11 @@ export class TrustedRouter {
       workspaceId,
     });
     const requestBody = serializeBody(body, requestHeaders);
+    const baseUrls = _baseUrls ?? this.baseUrls;
     let attempt = 0;
     let baseIndex = 0;
     while (true) {
-      const url = `${this.baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      const url = `${baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
         response = await this._fetchWithTimeout(
@@ -575,7 +585,7 @@ export class TrustedRouter {
       } catch (error) {
         if (error?.name === "AbortError") throw error;
         if (attempt >= this.maxRetries) throw transportError(error);
-        if (baseIndex < this.baseUrls.length - 1) baseIndex += 1;
+        if (baseIndex < baseUrls.length - 1) baseIndex += 1;
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
         continue;
@@ -583,7 +593,7 @@ export class TrustedRouter {
       if (
         attempt >= this.maxRetries ||
         !isRegionalFailoverable(response.status) ||
-        baseIndex >= this.baseUrls.length - 1
+        baseIndex >= baseUrls.length - 1
       ) {
         return response;
       }
@@ -596,6 +606,13 @@ export class TrustedRouter {
       await sleep(retrySleepMs(attempt, parseRetryAfter(response.headers)));
       attempt += 1;
     }
+  }
+
+  _controlRequest(method, path, init = {}) {
+    return this.request(method, path, {
+      ...init,
+      _baseUrls: [this.controlBaseUrl],
+    });
   }
 
   _buildHeaders({
@@ -780,16 +797,16 @@ export class TrustedRouter {
   // ---- catalog / metadata ---------------------------------------------
 
   models(options = {}) {
-    return this.request("GET", modelsPath(options));
+    return this._controlRequest("GET", modelsPath(options));
   }
   providers() {
-    return this.request("GET", "/providers");
+    return this._controlRequest("GET", "/providers");
   }
   regions() {
-    return this.request("GET", "/regions");
+    return this._controlRequest("GET", "/regions");
   }
   credits({ workspaceId = null } = {}) {
-    return this.request("GET", "/credits", { workspaceId });
+    return this._controlRequest("GET", "/credits", { workspaceId });
   }
 
   embeddings({
@@ -916,7 +933,7 @@ export class TrustedRouter {
   }
 
   broadcastDestinations({ workspaceId = null } = {}) {
-    return this.request("GET", "/broadcast/destinations", { workspaceId });
+    return this._controlRequest("GET", "/broadcast/destinations", { workspaceId });
   }
 
   createBroadcastDestination({
@@ -930,7 +947,7 @@ export class TrustedRouter {
     apiKey = null,
     workspaceId = null,
   } = {}) {
-    return this.request("POST", "/broadcast/destinations", {
+    return this._controlRequest("POST", "/broadcast/destinations", {
       body: broadcastDestinationBody({
         type,
         name,
@@ -946,13 +963,13 @@ export class TrustedRouter {
   }
 
   getBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("GET", `/broadcast/destinations/${id}`, {
+    return this._controlRequest("GET", `/broadcast/destinations/${id}`, {
       workspaceId,
     });
   }
 
   updateBroadcastDestination(id, { workspaceId = null, ...patch } = {}) {
-    return this.request("PATCH", `/broadcast/destinations/${id}`, {
+    return this._controlRequest("PATCH", `/broadcast/destinations/${id}`, {
       body: Object.fromEntries(
         Object.entries(patch).filter(([, value]) => value !== undefined),
       ),
@@ -961,13 +978,13 @@ export class TrustedRouter {
   }
 
   deleteBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("DELETE", `/broadcast/destinations/${id}`, {
+    return this._controlRequest("DELETE", `/broadcast/destinations/${id}`, {
       workspaceId,
     });
   }
 
   testBroadcastDestination(id, { workspaceId = null } = {}) {
-    return this.request("POST", `/broadcast/destinations/${id}/test`, {
+    return this._controlRequest("POST", `/broadcast/destinations/${id}/test`, {
       workspaceId,
     });
   }
@@ -995,7 +1012,7 @@ export class TrustedRouter {
     if (workspaceId !== null) body.workspace_id = workspaceId;
     if (successUrl !== null) body.success_url = successUrl;
     if (cancelUrl !== null) body.cancel_url = cancelUrl;
-    return this.request("POST", "/billing/checkout", {
+    return this._controlRequest("POST", "/billing/checkout", {
       body,
       idempotencyKey,
       workspaceId,
@@ -1011,10 +1028,10 @@ export class TrustedRouter {
   }
 
   authSession() {
-    return this.request("GET", "/auth/session");
+    return this._controlRequest("GET", "/auth/session");
   }
   logout() {
-    return this.request("POST", "/auth/logout");
+    return this._controlRequest("POST", "/auth/logout");
   }
 
   /**
@@ -1024,7 +1041,7 @@ export class TrustedRouter {
    * wallet_address, workspace_id, created_at } }.
    */
   userInfo() {
-    return this.request("GET", "/auth/userinfo");
+    return this._controlRequest("GET", "/auth/userinfo");
   }
 
   oauthAuthorizeUrl({
@@ -1043,7 +1060,7 @@ export class TrustedRouter {
     if (codeChallengeMethod && !codeChallenge) {
       throw new Error("codeChallenge is required when codeChallengeMethod is set");
     }
-    const authorizeUrl = new URL(`${this.baseUrl}/auth`);
+    const authorizeUrl = new URL(`${this.controlBaseUrl}/auth`);
     authorizeUrl.searchParams.set(
       "callback_url",
       state ? callbackUrlWithState(callbackUrl, state) : callbackUrl,
@@ -1091,7 +1108,7 @@ export class TrustedRouter {
     const body = { code };
     if (codeVerifier) body.code_verifier = codeVerifier;
     if (codeChallengeMethod) body.code_challenge_method = codeChallengeMethod;
-    return this.request("POST", "/auth/keys", {
+    return this._controlRequest("POST", "/auth/keys", {
       body,
       apiKey: "",
       credentials: "omit",
@@ -1107,7 +1124,7 @@ export class TrustedRouter {
       }
     }
     const suffix = query.size > 0 ? `?${query}` : "";
-    return this.request("GET", `/activity${suffix}`);
+    return this._controlRequest("GET", `/activity${suffix}`);
   }
 
   // ---- attestation ----------------------------------------------------

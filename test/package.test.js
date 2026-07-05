@@ -12,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 test("package manifest is configured for a public Apache-2.0 npm release", async () => {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.name, "@lore-hex/trusted-router");
-  assert.equal(pkg.version, "0.3.4");
+  assert.equal(pkg.version, "0.4.0");
   assert.equal(pkg.license, "Apache-2.0");
   assert.deepEqual(pkg.files, ["src", "README.md", "LICENSE"]);
   assert.deepEqual(Object.keys(pkg.exports).sort(), [

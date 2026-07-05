@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
+import {
+  DEFAULT_CONTROL_BASE_URL,
+  TrustedRouter,
+} from "../src/index.js";
 import { BrowserOAuthError, BrowserOAuthFlow } from "../src/oauth.js";
 
 const CALLBACK_URL = "https://app.example/auth/callback";
@@ -28,7 +31,10 @@ test("BrowserOAuthFlow.initiate returns a url and stashes state + verifier", asy
   });
 
   const parsed = new URL(url);
-  assert.equal(parsed.toString().startsWith(`${DEFAULT_API_BASE_URL}/auth?`), true);
+  assert.equal(
+    parsed.toString().startsWith(`${DEFAULT_CONTROL_BASE_URL}/auth?`),
+    true,
+  );
   assert.equal(parsed.searchParams.get("key_label"), "My App");
   assert.equal(parsed.searchParams.get("limit"), "5");
   assert.equal(parsed.searchParams.get("usage_limit_type"), "monthly");
@@ -80,7 +86,7 @@ test("BrowserOAuthFlow.handleCallback validates state and exchanges the code", a
     user_id: "user_1",
     identity: { sub: "user_1", email: "p@example.com", email_verified: true },
   });
-  assert.equal(exchangeBody.url, `${DEFAULT_API_BASE_URL}/auth/keys`);
+  assert.equal(exchangeBody.url, `${DEFAULT_CONTROL_BASE_URL}/auth/keys`);
   assert.equal(exchangeBody.method, "POST");
   assert.deepEqual(exchangeBody.body, {
     code: "auth_code-example",

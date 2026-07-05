@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   AUTO_MODEL,
   DEFAULT_API_BASE_URL,
+  DEFAULT_CONTROL_BASE_URL,
   FAST_MODEL,
   TrustedRouter,
   TrustedRouterError,
@@ -25,8 +26,11 @@ test("normalizes base URL and sends bearer token", async () => {
   });
 
   assert.equal(client.baseUrl, DEFAULT_API_BASE_URL);
-  assert.deepEqual(await client.models(), { data: [] });
-  assert.equal(calls[0].url, `${DEFAULT_API_BASE_URL}/models`);
+  assert.deepEqual(
+    await client.embeddings({ model: "text-embed", input: "hello" }),
+    { data: [] },
+  );
+  assert.equal(calls[0].url, `${DEFAULT_API_BASE_URL}/embeddings`);
   assert.equal(calls[0].init.headers.get("authorization"), "Bearer sk-tr-test");
 });
 
@@ -53,7 +57,7 @@ test("models accepts catalog filters", async () => {
   );
   assert.equal(
     calls[0],
-    `${DEFAULT_API_BASE_URL}/models?open_weights=true&provider%5Bjurisdiction%5D=us&provider%5Bregion%5D=eu`,
+    `${DEFAULT_CONTROL_BASE_URL}/models?open_weights=true&provider%5Bjurisdiction%5D=us&provider%5Bregion%5D=eu`,
   );
 });
 
@@ -147,13 +151,13 @@ test("stablecoin checkout and auth helpers send expected API bodies", async () =
   await client.logout();
 
   assert.deepEqual(calls[0], {
-    url: `${DEFAULT_API_BASE_URL}/billing/checkout`,
+    url: `${DEFAULT_CONTROL_BASE_URL}/billing/checkout`,
     method: "POST",
     body: { amount: 25, payment_method: "stablecoin", workspace_id: "ws_1" },
   });
-  assert.equal(calls[1].url, `${DEFAULT_API_BASE_URL}/auth/session`);
+  assert.equal(calls[1].url, `${DEFAULT_CONTROL_BASE_URL}/auth/session`);
   assert.deepEqual(calls[2], {
-    url: `${DEFAULT_API_BASE_URL}/auth/logout`,
+    url: `${DEFAULT_CONTROL_BASE_URL}/auth/logout`,
     method: "POST",
     body: undefined,
   });
@@ -180,7 +184,10 @@ test("OAuth helpers build a browser-safe PKCE authorization URL", async () => {
 
   const url = new URL(authorization.url);
   const callbackUrl = new URL(url.searchParams.get("callback_url"));
-  assert.equal(url.toString().startsWith(`${DEFAULT_API_BASE_URL}/auth?`), true);
+  assert.equal(
+    url.toString().startsWith(`${DEFAULT_CONTROL_BASE_URL}/auth?`),
+    true,
+  );
   assert.equal(callbackUrl.origin, "https://web.lorehex.co");
   assert.equal(callbackUrl.searchParams.get("state"), "csrf-state");
   assert.equal(url.searchParams.get("key_label"), "Lore Web");
@@ -227,7 +234,7 @@ test("exchangeOAuthKey posts code and verifier without bearer auth", async () =>
     data: { name: "Lore Web" },
   });
   assert.deepEqual(seen, {
-    url: `${DEFAULT_API_BASE_URL}/auth/keys`,
+    url: `${DEFAULT_CONTROL_BASE_URL}/auth/keys`,
     method: "POST",
     credentials: "omit",
     authorization: null,
@@ -268,7 +275,7 @@ test("userInfo GETs /auth/userinfo with the instance bearer key", async () => {
 
   assert.deepEqual(result, { data: profile });
   assert.deepEqual(seen, {
-    url: `${DEFAULT_API_BASE_URL}/auth/userinfo`,
+    url: `${DEFAULT_CONTROL_BASE_URL}/auth/userinfo`,
     method: "GET",
     authorization: "Bearer sk-tr-v1-delegated",
   });
@@ -300,7 +307,39 @@ test("chatCompletionsText yields parsed SSE text deltas", async () => {
   assert.deepEqual(tokens, ["hel", "lo"]);
 });
 
-test("request fails over to regional endpoint on 503", async () => {
+test("inference requests fail over to regional endpoint on 503", async () => {
+  const hosts = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    maxRetries: 1,
+    regionalFailover: true,
+    failoverRegions: ["europe-west4"],
+    fetchImpl: async (url) => {
+      hosts.push(new URL(url).host);
+      if (hosts.length === 1) {
+        return new Response(JSON.stringify({ error: { message: "down" } }), {
+          status: 503,
+          headers: { "content-type": "application/json", "retry-after": "0" },
+        });
+      }
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(
+    await client.embeddings({ model: "text-embed", input: "hello" }),
+    { data: [] },
+  );
+  assert.deepEqual(hosts, [
+    "api.trustedrouter.com",
+    "api-europe-west4.trustedrouter.com",
+  ]);
+});
+
+test("control requests retry without regional failover", async () => {
   const hosts = [];
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",
@@ -324,8 +363,8 @@ test("request fails over to regional endpoint on 503", async () => {
 
   assert.deepEqual(await client.models(), { data: [] });
   assert.deepEqual(hosts, [
-    "api.quillrouter.com",
-    "api-europe-west4.quillrouter.com",
+    "trustedrouter.com",
+    "trustedrouter.com",
   ]);
 });
 
@@ -362,8 +401,8 @@ test("streaming rawRequest fails over before returning error response", async ()
 
   assert.deepEqual(tokens, ["OK"]);
   assert.deepEqual(hosts, [
-    "api.quillrouter.com",
-    "api-europe-west4.quillrouter.com",
+    "api.trustedrouter.com",
+    "api-europe-west4.trustedrouter.com",
   ]);
   assert.match(idempotencyKeys[0], /^tr-req-/);
   assert.deepEqual(idempotencyKeys, [idempotencyKeys[0], idempotencyKeys[0]]);
