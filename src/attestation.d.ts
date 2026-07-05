@@ -1,5 +1,7 @@
 export declare const GCP_ISSUER: "https://confidentialcomputing.googleapis.com";
 export declare const GCP_JWKS_URI: string;
+export declare const EXPORTER_LABEL: "EXPORTER-Channel-Binding";
+export declare const EXPORTER_LENGTH: 32;
 
 export declare class AttestationVerificationError extends Error {}
 
@@ -35,6 +37,7 @@ export declare function verifyGatewayAttestation(
     policy: AttestationPolicy;
     nonceHex?: string | null;
     tlsCertDer?: Uint8Array | null;
+    tlsExporter?: Uint8Array | null;
     jwks?: { keys: Array<Record<string, unknown>> } | null;
     jwksUrl?: string;
     fetchImpl?: typeof fetch;

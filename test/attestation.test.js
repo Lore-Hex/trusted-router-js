@@ -11,6 +11,7 @@ import test from "node:test";
 
 import {
   AttestationVerificationError,
+  EXPORTER_LENGTH,
   GCP_ISSUER,
   policyFromTrustRelease,
   verifyGatewayAttestation,
@@ -59,6 +60,12 @@ async function sha256Hex(bytes) {
   const buf = await crypto.subtle.digest("SHA-256", bytes);
   let hex = "";
   for (const b of new Uint8Array(buf)) hex += b.toString(16).padStart(2, "0");
+  return hex;
+}
+
+function bytesToHex(bytes) {
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
   return hex;
 }
 
@@ -114,6 +121,24 @@ test("verify: works when aud is a string not a list (RFC 7519)", async () => {
     tlsCertDer: FAKE_CERT, jwks,
   });
   assert.equal(result.audience, "quill-cloud");
+});
+
+test("verify: exporter binding passes with fresh nonce and distinct exporter", async () => {
+  const kp = await genKeypair();
+  const jwks = { keys: [await publicJwk(kp)] };
+  const nonce = "ab".repeat(EXPORTER_LENGTH);
+  const tlsExporter = new Uint8Array(EXPORTER_LENGTH).fill(7);
+  const claims = await goodClaims({ nonce });
+  claims.eat_nonce.push(bytesToHex(tlsExporter));
+  const jwt = await makeJwt(kp, claims);
+  const result = await verifyGatewayAttestation(jwt, {
+    policy: { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null },
+    nonceHex: nonce,
+    tlsCertDer: FAKE_CERT,
+    tlsExporter,
+    jwks,
+  });
+  assert.equal(result.nonce, nonce);
 });
 
 // ---- failure modes -----------------------------------------------------
@@ -225,6 +250,56 @@ test("verify: missing nonce echo raises (replay defense)", async () => {
       jwks: { keys: [await publicJwk(kp)] },
     }),
     /nonce/,
+  );
+});
+
+test("verify: exporter binding raises when exporter is absent from nonces", async () => {
+  const kp = await genKeypair();
+  const nonce = "cd".repeat(EXPORTER_LENGTH);
+  const jwt = await makeJwt(kp, await goodClaims({ nonce }));
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      nonceHex: nonce,
+      tlsCertDer: FAKE_CERT,
+      tlsExporter: new Uint8Array(EXPORTER_LENGTH).fill(8),
+      jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /TLS exporter/,
+  );
+});
+
+test("verify: exporter binding requires a fresh nonce", async () => {
+  const kp = await genKeypair();
+  const tlsExporter = new Uint8Array(EXPORTER_LENGTH).fill(9);
+  const claims = await goodClaims();
+  claims.eat_nonce.push(bytesToHex(tlsExporter));
+  const jwt = await makeJwt(kp, claims);
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      tlsCertDer: FAKE_CERT,
+      tlsExporter,
+      jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /fresh nonce required with exporter binding/,
+  );
+});
+
+test("verify: exporter binding rejects single-slot relay nonce", async () => {
+  const kp = await genKeypair();
+  const tlsExporter = new Uint8Array(EXPORTER_LENGTH).fill(10);
+  const exporterHex = bytesToHex(tlsExporter);
+  const jwt = await makeJwt(kp, await goodClaims({ nonce: exporterHex }));
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null },
+      nonceHex: exporterHex,
+      tlsCertDer: FAKE_CERT,
+      tlsExporter,
+      jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /distinct/,
   );
 });
 
