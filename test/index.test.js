@@ -307,13 +307,12 @@ test("chatCompletionsText yields parsed SSE text deltas", async () => {
   assert.deepEqual(tokens, ["hel", "lo"]);
 });
 
-test("inference requests fail over to regional endpoint on 503", async () => {
+test("inference requests re-request the apex on 503", async () => {
   const hosts = [];
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",
     maxRetries: 1,
     regionalFailover: true,
-    failoverRegions: ["europe-west4"],
     fetchImpl: async (url) => {
       hosts.push(new URL(url).host);
       if (hosts.length === 1) {
@@ -335,7 +334,35 @@ test("inference requests fail over to regional endpoint on 503", async () => {
   );
   assert.deepEqual(hosts, [
     "api.trustedrouter.com",
-    "api-europe-west4.trustedrouter.com",
+    "api.trustedrouter.com",
+  ]);
+});
+
+test("transport errors are retried against the apex", async () => {
+  const hosts = [];
+  const client = new TrustedRouter({
+    apiKey: "sk-tr-test",
+    maxRetries: 1,
+    regionalFailover: true,
+    fetchImpl: async (url) => {
+      hosts.push(new URL(url).host);
+      if (hosts.length === 1) {
+        throw new Error("connect ECONNRESET");
+      }
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(
+    await client.embeddings({ model: "text-embed", input: "hello" }),
+    { data: [] },
+  );
+  assert.deepEqual(hosts, [
+    "api.trustedrouter.com",
+    "api.trustedrouter.com",
   ]);
 });
 
@@ -345,7 +372,6 @@ test("control requests retry without regional failover", async () => {
     apiKey: "sk-tr-test",
     maxRetries: 1,
     regionalFailover: true,
-    failoverRegions: ["europe-west4"],
     fetchImpl: async (url) => {
       hosts.push(new URL(url).host);
       if (hosts.length === 1) {
@@ -375,7 +401,6 @@ test("streaming rawRequest fails over before returning error response", async ()
     apiKey: "sk-tr-test",
     maxRetries: 1,
     regionalFailover: true,
-    failoverRegions: ["europe-west4"],
     fetchImpl: async (url, init) => {
       hosts.push(new URL(url).host);
       idempotencyKeys.push(new Headers(init.headers).get("idempotency-key"));
@@ -402,7 +427,7 @@ test("streaming rawRequest fails over before returning error response", async ()
   assert.deepEqual(tokens, ["OK"]);
   assert.deepEqual(hosts, [
     "api.trustedrouter.com",
-    "api-europe-west4.trustedrouter.com",
+    "api.trustedrouter.com",
   ]);
   assert.match(idempotencyKeys[0], /^tr-req-/);
   assert.deepEqual(idempotencyKeys, [idempotencyKeys[0], idempotencyKeys[0]]);

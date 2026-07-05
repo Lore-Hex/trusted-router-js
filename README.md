@@ -163,20 +163,14 @@ objects (with `finish_reason`, `model`, `id`) when you need more than just
 the text delta. `chatCompletionsRawStream(...)` yields the underlying SSE
 bytes — useful if you're writing an HTTP relay that doesn't want to parse.
 
-## Region pinning
+## Inference endpoint and failover
 
-The gateway is deployed in `us-central1` (the apex) and `europe-west4`. Pin
-to a specific region with one option:
-
-```js
-const client = new TrustedRouter({ apiKey: "sk-tr-v1-...", region: "europe-west4" });
-```
-
-The full list lives in `REGION_HOSTS`. Pass `region` for known regions, or
-`baseUrl` for a custom inference endpoint (e.g. a self-hosted gateway).
-Passing both is a configuration error. Metadata, OAuth, billing, credits,
-activity, and broadcast helpers use the control plane at
-`DEFAULT_CONTROL_BASE_URL`; override it with `controlBaseUrl` only when you
+Inference calls default to `DEFAULT_API_BASE_URL`, the global
+`api.trustedrouter.com` load balancer. Regional failover re-requests that apex;
+the load balancer handles healthy-region selection server-side. Pass `baseUrl`
+only for a custom inference endpoint (e.g. a self-hosted gateway). Metadata,
+OAuth, billing, credits, activity, and broadcast helpers use the control plane
+at `DEFAULT_CONTROL_BASE_URL`; override it with `controlBaseUrl` only when you
 need a custom control endpoint.
 
 ## Typed errors
@@ -221,8 +215,8 @@ Disable with `maxRetries: 0`:
 const client = new TrustedRouter({ apiKey: "...", maxRetries: 0 });
 ```
 
-Regional failover applies only to inference routes. Control-plane calls retry
-on the configured control host without rotating through inference regions.
+Regional failover applies only to inference routes and re-requests the apex.
+Control-plane calls retry on the configured control host.
 
 ## Per-call extras
 

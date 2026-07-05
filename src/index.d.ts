@@ -9,10 +9,6 @@ export declare const FUSION_MODEL: "trustedrouter/fusion";
 export declare const ADVISOR_MODEL: "trustedrouter/advisor";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
-export declare const REGION_HOSTS: Readonly<Record<string, string>>;
-export declare const DEFAULT_FAILOVER_REGIONS: ReadonlyArray<string>;
-
-export declare function regionBaseUrl(region: string): string;
 
 export type FusionSelectionStrategy =
   | "synthesize"
@@ -87,13 +83,16 @@ export interface TrustedRouterOptions {
   apiKey?: string | null;
   baseUrl?: string | null;
   controlBaseUrl?: string | null;
-  region?: keyof typeof REGION_HOSTS | string | null;
   fetchImpl?: TrustedRouterFetch;
   headers?: Record<string, string>;
   workspaceId?: string | null;
   maxRetries?: number;
+  /**
+   * Default: true. The apex is a global load balancer; failover is handled
+   * server-side, so the SDK re-requests the apex rather than pinning
+   * per-region hosts.
+   */
   regionalFailover?: boolean | null;
-  failoverRegions?: string[] | readonly string[] | null;
 }
 
 export interface PerCallOptions {
@@ -330,10 +329,10 @@ export declare class TrustedRouter {
   apiKey: string | null;
   baseUrl: string;
   controlBaseUrl: string;
-  region: string | null;
   fetch: TrustedRouterFetch;
   defaultHeaders: Record<string, string>;
   maxRetries: number;
+  regionalFailover: boolean;
   baseUrls: string[];
   constructor(options?: TrustedRouterOptions);
 

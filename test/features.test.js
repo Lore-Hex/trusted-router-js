@@ -1,6 +1,6 @@
 /**
  * Coverage for the v0.3 feature set added to the JS SDK:
- *   typed errors, retries, region shortcut, per-call extras
+ *   typed errors, retries, apex routing, per-call extras
  *   (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId),
  *   messages, User-Agent header, raw stream.
  *
@@ -22,11 +22,9 @@ import {
   NotFoundError,
   PermissionDeniedError,
   RateLimitError,
-  REGION_HOSTS,
   TrustedRouter,
   TrustedRouterError,
   collectCompletion,
-  regionBaseUrl,
 } from "../src/index.js";
 
 function jsonResponse(status, body, headers = {}) {
@@ -43,47 +41,30 @@ function sseResponse(body) {
   });
 }
 
-// ---- region shortcut ---------------------------------------------------
+// ---- routing defaults --------------------------------------------------
 
 test("default base constants split inference and control planes", () => {
   assert.equal(DEFAULT_API_BASE_URL, "https://api.trustedrouter.com/v1");
   assert.equal(DEFAULT_CONTROL_BASE_URL, "https://trustedrouter.com/v1");
 });
 
-test("regionBaseUrl returns the right URL for known regions", () => {
-  assert.equal(
-    regionBaseUrl("europe-west4"),
-    "https://api-europe-west4.trustedrouter.com/v1",
-  );
-  assert.equal(regionBaseUrl("us-central1"), DEFAULT_API_BASE_URL);
-});
-
-test("regionBaseUrl throws on unknown region", () => {
-  assert.throws(() => regionBaseUrl("mars"), /unknown TrustedRouter region/);
-});
-
-test("REGION_HOSTS is frozen — callers can't mutate it", () => {
-  assert.throws(() => { REGION_HOSTS["mars"] = "x"; }, TypeError);
-});
-
-test("constructor: region= sets baseUrl + region", () => {
-  const c = new TrustedRouter({ region: "europe-west4", fetchImpl: async () => new Response() });
-  assert.equal(c.baseUrl, "https://api-europe-west4.trustedrouter.com/v1");
-  assert.equal(c.region, "europe-west4");
-});
-
-test("constructor: passing both region and baseUrl is an error", () => {
+test("constructor: rejects removed region pinning options", () => {
   assert.throws(
-    () => new TrustedRouter({ region: "us-central1", baseUrl: "https://x/v1", fetchImpl: async () => new Response() }),
-    /OR baseUrl/,
+    () => new TrustedRouter({ region: "europe-west4", fetchImpl: async () => new Response() }),
+    /region pinning has been removed/,
+  );
+  assert.throws(
+    () => new TrustedRouter({ failoverRegions: ["europe-west4"], fetchImpl: async () => new Response() }),
+    /failoverRegions has been removed/,
   );
 });
 
-test("constructor: defaults to apex when neither region nor baseUrl given", () => {
+test("constructor: defaults to apex when no baseUrl is given", () => {
   const c = new TrustedRouter({ fetchImpl: async () => new Response() });
   assert.equal(c.baseUrl, DEFAULT_API_BASE_URL);
   assert.equal(c.controlBaseUrl, DEFAULT_CONTROL_BASE_URL);
-  assert.equal(c.region, null);
+  assert.equal(c.regionalFailover, true);
+  assert.deepEqual(c.baseUrls, [DEFAULT_API_BASE_URL]);
 });
 
 test("controlBaseUrl override applies to control calls and OAuth URLs", async () => {
@@ -267,18 +248,24 @@ test("maxRetries=0 disables retry loop entirely", async () => {
   assert.equal(calls, 1);
 });
 
-test("4xx errors other than 429 are not retried", async () => {
-  let calls = 0;
-  const c = new TrustedRouter({
-    apiKey: "k",
-    fetchImpl: async () => {
-      calls++;
-      return jsonResponse(401, { error: { message: "x" } });
-    },
-    maxRetries: 5,
-  });
-  await assert.rejects(c.models(), AuthenticationError);
-  assert.equal(calls, 1);
+test("400/401/404 errors are not retried", async () => {
+  for (const [status, ErrCls] of [
+    [400, BadRequestError],
+    [401, AuthenticationError],
+    [404, NotFoundError],
+  ]) {
+    let calls = 0;
+    const c = new TrustedRouter({
+      apiKey: "k",
+      fetchImpl: async () => {
+        calls++;
+        return jsonResponse(status, { error: { message: "x" } });
+      },
+      maxRetries: 5,
+    });
+    await assert.rejects(c.models(), ErrCls);
+    assert.equal(calls, 1);
+  }
 });
 
 // ---- per-call extras ---------------------------------------------------

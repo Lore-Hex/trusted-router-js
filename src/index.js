@@ -4,9 +4,10 @@
  * OpenAI-compatible client for https://api.trustedrouter.com/v1.
  *
  * Mirrors the Python SDK's surface so multi-language teams stay in
- * sync: typed errors, automatic retries with backoff, region pinning,
- * per-call extras (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId),
- * and messages/activity wrappers.
+ * sync: typed errors, automatic retries with backoff, apex load-balancer
+ * failover, per-call extras
+ * (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId), and
+ * messages/activity wrappers.
  *
  * Attestation verification (`verifyGatewayAttestation`) lives in
  * ./attestation.js — split out so the base bundle stays small and
@@ -183,29 +184,6 @@ function chatCompletionBody({ model, messages, params }) {
   return out;
 }
 
-// Region routing — mirror of Python REGION_HOSTS. The us-central1 entry
-// aliases the apex because the regional subdomain isn't published yet.
-export const REGION_HOSTS = Object.freeze({
-  "us-central1": "api.trustedrouter.com",
-  "us-east4": "api-us-east4.trustedrouter.com",
-  "europe-west4": "api-europe-west4.trustedrouter.com",
-});
-export const DEFAULT_FAILOVER_REGIONS = Object.freeze([
-  "us-central1",
-  "us-east4",
-  "europe-west4",
-]);
-
-export function regionBaseUrl(region) {
-  if (!Object.hasOwn(REGION_HOSTS, region)) {
-    const known = Object.keys(REGION_HOSTS).sort().join(", ");
-    throw new Error(
-      `unknown TrustedRouter region '${region}'; known: ${known}`,
-    );
-  }
-  return `https://${REGION_HOSTS[region]}/v1`;
-}
-
 function modelsPath({
   openWeights = null,
   providerJurisdiction = null,
@@ -320,14 +298,20 @@ function isRegionalFailoverable(statusCode) {
   return statusCode === 502 || statusCode === 503 || statusCode === 504;
 }
 
-function regionalBaseUrls(primaryBaseUrl, enabled, failoverRegions = null) {
-  const urls = [primaryBaseUrl.replace(/\/+$/, "")];
-  if (!enabled) return urls;
-  for (const region of failoverRegions ?? DEFAULT_FAILOVER_REGIONS) {
-    const candidate = regionBaseUrl(region).replace(/\/+$/, "");
-    if (!urls.includes(candidate)) urls.push(candidate);
+function baseUrls(primaryBaseUrl) {
+  return [primaryBaseUrl.replace(/\/+$/, "")];
+}
+
+function shouldRetryResponse(statusCode, isInferenceRequest, regionalFailover) {
+  if (!isRetryable(statusCode)) return false;
+  if (isInferenceRequest && isRegionalFailoverable(statusCode)) {
+    return regionalFailover;
   }
-  return urls;
+  return true;
+}
+
+function shouldRetryTransport(isInferenceRequest, regionalFailover) {
+  return !isInferenceRequest || regionalFailover;
 }
 
 function transportError(error) {
@@ -335,7 +319,7 @@ function transportError(error) {
     error && typeof error.message === "string" ? error.message : String(error);
   return new InternalError(
     503,
-    `TrustedRouter regional endpoint unavailable: ${message}`,
+    `TrustedRouter endpoint unavailable: ${message}`,
     null,
   );
 }
@@ -433,18 +417,21 @@ export class TrustedRouter {
     headers = {},
     workspaceId = null,
     maxRetries = 2,
-    regionalFailover = null,
+    regionalFailover = true,
     failoverRegions = null,
   } = {}) {
     if (!fetchImpl) {
       throw new Error("A fetch implementation is required");
     }
-    const explicitEndpoint = Boolean(region || baseUrl);
-    if (region && baseUrl) {
-      throw new Error("pass region OR baseUrl, not both");
+    if (region !== null && region !== undefined) {
+      throw new Error(
+        "region pinning has been removed; use the global TrustedRouter apex",
+      );
     }
-    if (region) {
-      baseUrl = regionBaseUrl(region);
+    if (failoverRegions !== null && failoverRegions !== undefined) {
+      throw new Error(
+        "failoverRegions has been removed; the apex is a global load balancer",
+      );
     }
     if (!baseUrl) {
       baseUrl = DEFAULT_API_BASE_URL;
@@ -455,18 +442,13 @@ export class TrustedRouter {
       /\/+$/,
       "",
     );
-    this.region = region;
     this.workspaceId = workspaceId;
     this.fetch = fetchImpl;
     this.defaultHeaders = headers;
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
-    const failoverEnabled =
-      regionalFailover === null ? !explicitEndpoint : Boolean(regionalFailover);
-    this.baseUrls = regionalBaseUrls(
-      this.baseUrl,
-      failoverEnabled,
-      failoverRegions,
-    );
+    this.regionalFailover =
+      regionalFailover === null ? true : Boolean(regionalFailover);
+    this.baseUrls = baseUrls(this.baseUrl);
   }
 
   // ---- core request loop ----------------------------------------------
@@ -493,11 +475,12 @@ export class TrustedRouter {
     });
     const requestBody = serializeBody(body, requestHeaders);
 
-    const baseUrls = _baseUrls ?? this.baseUrls;
+    const isInferenceRequest = _baseUrls === null;
+    const requestBaseUrls = _baseUrls ?? this.baseUrls;
+    const requestBaseUrl = requestBaseUrls[0];
     let attempt = 0;
-    let baseIndex = 0;
     while (true) {
-      const url = `${baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
         response = await this._fetchWithTimeout(
@@ -512,21 +495,26 @@ export class TrustedRouter {
         );
       } catch (error) {
         if (error?.name === "AbortError") throw error;
-        if (attempt >= this.maxRetries) throw transportError(error);
-        if (baseIndex < baseUrls.length - 1) baseIndex += 1;
+        if (
+          attempt >= this.maxRetries ||
+          !shouldRetryTransport(isInferenceRequest, this.regionalFailover)
+        ) {
+          throw transportError(error);
+        }
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
         continue;
       }
 
-      if (attempt >= this.maxRetries || !isRetryable(response.status)) {
-        return jsonOrThrow(response);
-      }
       if (
-        isRegionalFailoverable(response.status) &&
-        baseIndex < baseUrls.length - 1
+        attempt >= this.maxRetries ||
+        !shouldRetryResponse(
+          response.status,
+          isInferenceRequest,
+          this.regionalFailover,
+        )
       ) {
-        baseIndex += 1;
+        return jsonOrThrow(response);
       }
       const retryAfter = parseRetryAfter(response.headers);
       // Drain the response so we don't leak a connection while sleeping.
@@ -565,11 +553,12 @@ export class TrustedRouter {
       workspaceId,
     });
     const requestBody = serializeBody(body, requestHeaders);
-    const baseUrls = _baseUrls ?? this.baseUrls;
+    const isInferenceRequest = _baseUrls === null;
+    const requestBaseUrls = _baseUrls ?? this.baseUrls;
+    const requestBaseUrl = requestBaseUrls[0];
     let attempt = 0;
-    let baseIndex = 0;
     while (true) {
-      const url = `${baseUrls[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+      const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
         response = await this._fetchWithTimeout(
@@ -584,8 +573,12 @@ export class TrustedRouter {
         );
       } catch (error) {
         if (error?.name === "AbortError") throw error;
-        if (attempt >= this.maxRetries) throw transportError(error);
-        if (baseIndex < baseUrls.length - 1) baseIndex += 1;
+        if (
+          attempt >= this.maxRetries ||
+          !shouldRetryTransport(isInferenceRequest, this.regionalFailover)
+        ) {
+          throw transportError(error);
+        }
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
         continue;
@@ -593,7 +586,8 @@ export class TrustedRouter {
       if (
         attempt >= this.maxRetries ||
         !isRegionalFailoverable(response.status) ||
-        baseIndex >= baseUrls.length - 1
+        !isInferenceRequest ||
+        !this.regionalFailover
       ) {
         return response;
       }
@@ -602,7 +596,6 @@ export class TrustedRouter {
       } catch {
         /* ignore */
       }
-      baseIndex += 1;
       await sleep(retrySleepMs(attempt, parseRetryAfter(response.headers)));
       attempt += 1;
     }
