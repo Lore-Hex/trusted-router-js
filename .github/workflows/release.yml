@@ -8,6 +8,16 @@ name: Release to npm
 #   Repository         : trusted-router-js
 #   Workflow filename  : release.yml
 #   Environment        : npm  (matches the `environment:` line below)
+#
+# CRITICAL (root cause of the earlier E404 publish failures; fix mirrors the
+# working setup in Lore-Hex/workweave-router): actions/setup-node@v4/v5
+# unconditionally writes `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+# into .npmrc, which SHORT-CIRCUITS the OIDC code path — npm tries the empty
+# placeholder token and 404s ("do not have permission") before ever using
+# OIDC. setup-node@v6 is the first release with npm OIDC support that does NOT
+# write that placeholder. Node 24 ships npm >= 11.5 (the OIDC minimum). Do NOT
+# downgrade setup-node or Node, and do NOT re-add `npm install -g npm@latest`
+# (a band-aid that can't help while setup-node still poisons .npmrc).
 on:
   push:
     tags:
@@ -20,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - run: npm ci || npm install
       - run: npm run check
@@ -34,12 +44,14 @@ jobs:
       id-token: write   # required for npm OIDC trusted publishing
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Third-party actions pinned to commit SHAs: this job has id-token:write
+      # and publishes to npm, so a retargeted floating tag on an upstream
+      # action could publish a malicious package.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # setup-node v6 is the first release with npm OIDC support (does NOT
+      # write the _authToken placeholder that short-circuits OIDC).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
-      # npm >= 11.5 is required for OIDC trusted publishing; node 20 ships npm 10,
-      # which silently falls back to setup-node's placeholder token and 404s.
-      - run: npm install -g npm@latest
-      - run: npm publish --provenance
+      - run: npm publish --provenance --access public

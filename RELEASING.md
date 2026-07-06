@@ -45,15 +45,27 @@ secret `NPM_TOKEN`, and add to the `npm publish --provenance` step in
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-## Gotcha: `npm error code E404` on publish means AUTH, not a missing package
+## Gotcha: E404 on publish = OIDC short-circuited by setup-node's placeholder token
 
 `npm publish` returns **404 Not Found** (not 403) when the runner cannot
-authenticate to publish an existing package — npm masks publish auth failures
-as 404 to avoid leaking package existence. If you see
-`E404 ... '@lore-hex/trusted-router@X.Y.Z' is not in this registry` in a
-release run, the package is fine; the **credential path is missing** (no
-trusted publisher configured, or a bad/expired `NPM_TOKEN`). Fix the auth per
-above — do not bump the version chasing a phantom "package not found".
+authenticate — npm masks publish auth failures as 404. The ROOT CAUSE of the
+repeated failures here (v0.3.1–v0.5.0 all failed): **`actions/setup-node@v4/v5`
+unconditionally writes `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`
+into `.npmrc`**, and npm then tries token auth with that empty placeholder and
+404s **before** ever attempting OIDC. Upgrading npm alone does not help — the
+poisoned `.npmrc` short-circuits OIDC regardless of npm version.
+
+**Fix (mirrors the working `Lore-Hex/workweave-router` setup):**
+- `actions/setup-node@v6` (first release with npm OIDC support; does not write
+  the placeholder authToken).
+- `node-version: "24"` (ships npm ≥ 11.5, the OIDC minimum).
+- `npm publish --provenance --access public`.
+- Pin third-party actions to commit SHAs (this job has `id-token: write`).
+
+If you still see E404 after that, the npm-side trusted publisher does not match
+this workflow — verify repo `Lore-Hex/trusted-router-js`, workflow
+`release.yml`, environment `npm`. Do not bump the version chasing a phantom
+"package not found".
 
 ## Sibling SDKs (same pattern)
 
