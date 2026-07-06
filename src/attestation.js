@@ -23,6 +23,8 @@ export const GCP_ISSUER = "https://confidentialcomputing.googleapis.com";
 export const GCP_JWKS_URI =
   "https://www.googleapis.com/service_accounts/v1/metadata/jwk/" +
   "signer@confidentialspace-sign.iam.gserviceaccount.com";
+export const EXPORTER_LABEL = "EXPORTER-Channel-Binding";
+export const EXPORTER_LENGTH = 32;
 
 export class AttestationVerificationError extends Error {
   constructor(message) {
@@ -61,6 +63,7 @@ export async function policyFromTrustRelease({
  *   policy         { audience, imageDigest, imageReference, certSha256? }
  *   nonceHex       The same nonce sent in the /attestation request (optional)
  *   tlsCertDer     Uint8Array — DER bytes of the gateway's leaf cert (optional)
+ *   tlsExporter    Uint8Array — RFC 9266 exporter from the same TLS session
  *   jwks           pre-fetched Google JWKS (optional; will fetch if absent)
  *
  * Returns a GatewayAttestation object on success. Throws
@@ -70,6 +73,7 @@ export async function verifyGatewayAttestation(document, {
   policy,
   nonceHex = null,
   tlsCertDer = null,
+  tlsExporter = null,
   jwks = null,
   jwksUrl = GCP_JWKS_URI,
   fetchImpl = globalThis.fetch,
@@ -82,7 +86,7 @@ export async function verifyGatewayAttestation(document, {
     jwks = await fetchJwks(jwksUrl, fetchImpl);
   }
   await verifyRs256(jwks, header, signingInput, signature);
-  return await checkClaims(payload, { policy, nonceHex, tlsCertDer });
+  return await checkClaims(payload, { policy, nonceHex, tlsCertDer, tlsExporter });
 }
 
 // ---- internals ---------------------------------------------------------
@@ -179,7 +183,7 @@ async function verifyRs256(jwks, header, signingInput, signature) {
   }
 }
 
-async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
+async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }) {
   const now = Math.floor(Date.now() / 1000);
   if (typeof claims.exp === "number" && claims.exp <= now) {
     throw new AttestationVerificationError(
@@ -222,12 +226,34 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
   if (typeof nonces === "string") nonces = [nonces];
   let nonceMatch = null;
   if (nonceHex !== null) {
-    if (!nonces.includes(nonceHex)) {
+    if (!hasNonce(nonces, nonceHex)) {
       throw new AttestationVerificationError(
         `nonce ${JSON.stringify(nonceHex)} not present in JWT nonces ${JSON.stringify(nonces)}`,
       );
     }
     nonceMatch = nonceHex;
+  }
+
+  if (tlsExporter !== null) {
+    if (nonceHex === null) {
+      throw new AttestationVerificationError(
+        "fresh nonce required with exporter binding",
+      );
+    }
+    const exporterHex = bytesToHex(tlsExporter);
+    if (!hasNonce(nonces, exporterHex)) {
+      throw new AttestationVerificationError(
+        "TLS exporter not present in JWT nonces",
+      );
+    }
+    // G6/RFC 9266 session binding needs both the fresh caller nonce and
+    // exporter. A single-slot relay can echo one value, but cannot satisfy
+    // this distinctness check and the exporter membership check together.
+    if (constantTimeStringEqual(nonceHex.toLowerCase(), exporterHex)) {
+      throw new AttestationVerificationError(
+        "fresh nonce must be distinct from TLS exporter",
+      );
+    }
   }
 
   // Cert binding
@@ -270,9 +296,39 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer }) {
 
 function findCertInNonces(nonces, certHex) {
   for (const n of nonces) {
-    if (typeof n === "string" && n.toLowerCase() === certHex) return n.toLowerCase();
+    if (typeof n === "string" && constantTimeStringEqual(n.toLowerCase(), certHex)) {
+      return n.toLowerCase();
+    }
   }
   return null;
+}
+
+function hasNonce(nonces, expectedHex) {
+  const expected = String(expectedHex).toLowerCase();
+  let found = false;
+  for (const n of nonces) {
+    if (typeof n === "string") {
+      found = constantTimeStringEqual(n.toLowerCase(), expected) || found;
+    }
+  }
+  return found;
+}
+
+function constantTimeStringEqual(a, b) {
+  const left = String(a);
+  const right = String(b);
+  const max = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < max; i++) {
+    diff |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+function bytesToHex(bytes) {
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return hex;
 }
 
 async function sha256Hex(bytes) {

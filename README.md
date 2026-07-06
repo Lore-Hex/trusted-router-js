@@ -42,6 +42,15 @@ console.log(resp.choices[0].message.content);
 
 `chatCompletions(...)` defaults to `AUTO_MODEL` when `model` is omitted.
 
+## Node TLS session verification
+
+G6 TLS session pinning uses Node TLS sockets, so import it from the Node-only
+session subpath rather than the browser-safe package root:
+
+```js
+import { verifyGatewaySession } from "@lore-hex/trusted-router/session";
+```
+
 ## Fusion
 
 Fan a request across a panel of models and let a judge model pick or synthesize

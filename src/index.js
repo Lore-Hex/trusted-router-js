@@ -10,8 +10,9 @@
  * messages/activity wrappers.
  *
  * Attestation verification (`verifyGatewayAttestation`) lives in
- * ./attestation.js — split out so the base bundle stays small and
- * SubtleCrypto is only imported when callers actually need to verify.
+ * ./attestation.js. TLS session pinning lives in the Node-only
+ * @lore-hex/trusted-router/session subpath so browser root imports do not
+ * pull Node built-ins.
  */
 
 export const VERSION = "0.4.0";
