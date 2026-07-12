@@ -809,11 +809,17 @@ export class TrustedRouter {
     encodingFormat = null,
     dimensions = null,
     user = null,
+    sessionId = null,
+    trace = null,
+    tags = null,
   }) {
     const body = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
     if (dimensions !== null) body.dimensions = dimensions;
     if (user !== null) body.user = user;
+    if (sessionId !== null) body.session_id = sessionId;
+    if (trace !== null) body.trace = trace;
+    if (tags !== null) body.tags = tags;
     return this.request("POST", "/embeddings", { body });
   }
 
