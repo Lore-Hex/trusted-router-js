@@ -42,6 +42,30 @@ console.log(resp.choices[0].message.content);
 
 `chatCompletions(...)` defaults to `AUTO_MODEL` when `model` is omitted.
 
+## Cost allocation tags
+
+Attach up to 50 AWS-style string tags to any inference request. Tags remain
+outside model prompts and provider payloads and appear in TrustedRouter
+generation and activity metadata.
+
+```js
+const response = await client.chatCompletions({
+  model: "trustedrouter/zdr",
+  messages: [{ role: "user", content: "Summarize this contract." }],
+  tags: {
+    environment: "production",
+    team: "legal",
+    "cost-center": "legal-01",
+  },
+  user: "user_123",
+  session_id: "matter_456",
+});
+```
+
+The same `tags`, `user`, `session_id`, and `trace` fields work with Responses,
+Messages, and Embeddings. Request tags override API key default tags with the
+same key.
+
 ## Node TLS session verification
 
 G6 TLS session pinning uses Node TLS sockets, so import it from the Node-only
