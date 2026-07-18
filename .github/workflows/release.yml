@@ -1,13 +1,11 @@
 name: Release to npm
 
-# Triggered when a `vX.Y.Z` tag is pushed. Uses npm Trusted Publishing
-# (OIDC) — no NPM_TOKEN required once the publisher is configured at
-# https://www.npmjs.com/settings/lore-hex/packages — link the package
-# @lore-hex/trusted-router to:
-#   GitHub owner       : Lore-Hex
-#   Repository         : trusted-router-js
-#   Workflow filename  : release.yml
-#   Environment        : npm  (matches the `environment:` line below)
+# Triggered when a `vX.Y.Z` tag is pushed. Publishes with a granular
+# automation token (repo secret NPM_TOKEN) for auth; --provenance still
+# attests the build via the job's OIDC id-token. If npm Trusted Publishing
+# is later configured at https://www.npmjs.com/settings/lore-hex/packages
+# (owner Lore-Hex, repo trusted-router-js, workflow release.yml,
+# environment npm), the token env line below can be dropped.
 on:
   push:
     tags:
@@ -43,3 +41,5 @@ jobs:
       # which silently falls back to setup-node's placeholder token and 404s.
       - run: npm install -g npm@latest
       - run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
