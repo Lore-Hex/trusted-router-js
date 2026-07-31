@@ -3,6 +3,8 @@ export declare const DEFAULT_API_BASE_URL: "https://api.trustedrouter.com/v1";
 export declare const DEFAULT_CONTROL_BASE_URL: "https://trustedrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
+export declare const DEFAULT_REGION_PROBE_TIMEOUT_MS: 1500;
+export declare const REGION_BASE_URLS: ReadonlyArray<string>;
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
@@ -87,12 +89,15 @@ export interface TrustedRouterOptions {
   headers?: Record<string, string>;
   workspaceId?: string | null;
   maxRetries?: number;
-  /**
-   * Default: true. The apex is a global load balancer; failover is handled
-   * server-side, so the SDK re-requests the apex rather than pinning
-   * per-region hosts.
-   */
+  /** Default: true. Retry connection and gateway failures across regions. */
   regionalFailover?: boolean | null;
+  /**
+   * Probe healthy regional endpoints once and pin the fastest for this client.
+   * Defaults on for the global fetch implementation and off for injected fetches.
+   */
+  regionalAffinity?: boolean | null;
+  /** Per-region health-probe timeout in milliseconds. Default: 1500. */
+  regionProbeTimeout?: number;
 }
 
 export interface PerCallOptions {

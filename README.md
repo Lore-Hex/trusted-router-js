@@ -174,10 +174,16 @@ bytes — useful if you're writing an HTTP relay that doesn't want to parse.
 
 ## Inference endpoint and failover
 
-Inference calls default to `DEFAULT_API_BASE_URL`, the global
-`api.trustedrouter.com` load balancer. Regional failover re-requests that apex;
-the load balancer handles healthy-region selection server-side. Pass `baseUrl`
-only for a custom inference endpoint (e.g. a self-hosted gateway). Metadata,
+Inference calls default to `DEFAULT_API_BASE_URL`. The default client probes
+the published US Central, US East, and Europe gateways in parallel on its first
+inference request, pins the lowest-latency healthy region, and keeps the other
+regions plus the global apex as idempotent failover targets. Reuse one client to
+retain region affinity and connection pooling, reuse DNS results, and improve
+prompt-cache locality. Set `regionalAffinity: false` to use only the global endpoint. A
+custom `baseUrl` is never probed or rewritten. A custom `fetch` defaults
+affinity off; opt in with `regionalAffinity: true` when its transport can reach
+the public regional hosts. Pass `baseUrl` only for a custom inference endpoint
+(e.g. a self-hosted gateway). Metadata,
 OAuth, billing, credits, activity, and broadcast helpers use the control plane
 at `DEFAULT_CONTROL_BASE_URL`; override it with `controlBaseUrl` only when you
 need a custom control endpoint.
@@ -224,8 +230,9 @@ Disable with `maxRetries: 0`:
 const client = new TrustedRouter({ apiKey: "...", maxRetries: 0 });
 ```
 
-Regional failover applies only to inference routes and re-requests the apex.
-Control-plane calls retry on the configured control host.
+Regional failover applies only to inference routes and preserves the same
+idempotency key when it advances to another healthy gateway. Control-plane
+calls retry on the configured control host.
 
 ## Per-call extras
 
