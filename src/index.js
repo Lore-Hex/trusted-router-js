@@ -22,6 +22,12 @@ export const DEFAULT_TRUST_RELEASE_URL =
   "https://trust.trustedrouter.com/trust/gcp-release.json";
 export const DEFAULT_STATUS_URL =
   "https://status.trustedrouter.com/status.json";
+export const DEFAULT_REGION_PROBE_TIMEOUT_MS = 1500;
+export const REGION_BASE_URLS = Object.freeze([
+  "https://api-us-central1.quillrouter.com/v1",
+  "https://api-us-east4.quillrouter.com/v1",
+  "https://api-europe-west4.quillrouter.com/v1",
+]);
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
 export const FUSION_MODEL = "trustedrouter/fusion";
@@ -303,6 +309,14 @@ function baseUrls(primaryBaseUrl) {
   return [primaryBaseUrl.replace(/\/+$/, "")];
 }
 
+function regionCandidates(primaryBaseUrl) {
+  return [...new Set([...REGION_BASE_URLS, primaryBaseUrl.replace(/\/+$/, "")])];
+}
+
+function healthyRegionStatus(statusCode) {
+  return statusCode === 200 || statusCode === 401;
+}
+
 function shouldRetryResponse(statusCode, isInferenceRequest, regionalFailover) {
   if (!isRetryable(statusCode)) return false;
   if (isInferenceRequest && isRegionalFailoverable(statusCode)) {
@@ -419,6 +433,8 @@ export class TrustedRouter {
     workspaceId = null,
     maxRetries = 2,
     regionalFailover = true,
+    regionalAffinity = null,
+    regionProbeTimeout = DEFAULT_REGION_PROBE_TIMEOUT_MS,
     failoverRegions = null,
   } = {}) {
     if (!fetchImpl) {
@@ -434,6 +450,11 @@ export class TrustedRouter {
         "failoverRegions has been removed; the apex is a global load balancer",
       );
     }
+    const useRegionalAffinity = !baseUrl && (
+      regionalAffinity === null
+        ? fetchImpl === globalThis.fetch
+        : Boolean(regionalAffinity)
+    );
     if (!baseUrl) {
       baseUrl = DEFAULT_API_BASE_URL;
     }
@@ -450,6 +471,47 @@ export class TrustedRouter {
     this.regionalFailover =
       regionalFailover === null ? true : Boolean(regionalFailover);
     this.baseUrls = baseUrls(this.baseUrl);
+    this.regionProbeTimeout = Math.max(100, Number(regionProbeTimeout) || 0);
+    this.regionAffinityPending = useRegionalAffinity && this.regionalFailover;
+    this.regionAffinityPromise = null;
+  }
+
+  async _activeBaseUrls() {
+    if (!this.regionAffinityPending) return this.baseUrls;
+    if (!this.regionAffinityPromise) {
+      this.regionAffinityPromise = this._rankRegionalBaseUrls();
+    }
+    this.baseUrls = await this.regionAffinityPromise;
+    this.regionAffinityPending = false;
+    return this.baseUrls;
+  }
+
+  async _rankRegionalBaseUrls() {
+    const candidates = regionCandidates(this.baseUrl);
+    let winner = null;
+    try {
+      winner = await Promise.any(
+        candidates.map(async (baseUrl) => {
+          const response = await this._fetchWithTimeout(
+            `${baseUrl.replace(/\/v1$/, "")}/health`,
+            { method: "GET", headers: { accept: "application/json" } },
+            this.regionProbeTimeout,
+          );
+          try {
+            await response.text();
+          } catch {
+            // Status is still enough to rank a liveness response.
+          }
+          if (!healthyRegionStatus(response.status)) {
+            throw new Error("unhealthy regional gateway");
+          }
+          return baseUrl;
+        }),
+      );
+    } catch {
+      return [this.baseUrl];
+    }
+    return [...new Set([winner, this.baseUrl, ...candidates])];
   }
 
   // ---- core request loop ----------------------------------------------
@@ -467,20 +529,26 @@ export class TrustedRouter {
       ...rest
     } = init;
 
+    const isInferenceRequest = _baseUrls === null;
+    const requestIdempotencyKey = idempotencyKey ?? (
+      isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
+        ? newIdempotencyKey()
+        : null
+    );
     const requestHeaders = this._buildHeaders({
       headers,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       apiKey,
       workspaceId,
     });
     const requestBody = serializeBody(body, requestHeaders);
 
-    const isInferenceRequest = _baseUrls === null;
-    const requestBaseUrls = _baseUrls ?? this.baseUrls;
-    const requestBaseUrl = requestBaseUrls[0];
+    const requestBaseUrls = _baseUrls ?? await this._activeBaseUrls();
     let attempt = 0;
+    let baseIndex = 0;
     while (true) {
+      const requestBaseUrl = requestBaseUrls[baseIndex];
       const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
@@ -501,6 +569,9 @@ export class TrustedRouter {
           !shouldRetryTransport(isInferenceRequest, this.regionalFailover)
         ) {
           throw transportError(error);
+        }
+        if (isInferenceRequest && baseIndex < requestBaseUrls.length - 1) {
+          baseIndex += 1;
         }
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
@@ -524,6 +595,13 @@ export class TrustedRouter {
       } catch {
         /* ignore */
       }
+      if (
+        isInferenceRequest &&
+        isRegionalFailoverable(response.status) &&
+        baseIndex < requestBaseUrls.length - 1
+      ) {
+        baseIndex += 1;
+      }
       await sleep(retrySleepMs(attempt, retryAfter));
       attempt += 1;
     }
@@ -546,19 +624,25 @@ export class TrustedRouter {
       workspaceId = null,
       ...rest
     } = init;
+    const isInferenceRequest = _baseUrls === null;
+    const requestIdempotencyKey = idempotencyKey ?? (
+      isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
+        ? newIdempotencyKey()
+        : null
+    );
     const requestHeaders = this._buildHeaders({
       headers,
       extraHeaders,
-      idempotencyKey,
+      idempotencyKey: requestIdempotencyKey,
       apiKey,
       workspaceId,
     });
     const requestBody = serializeBody(body, requestHeaders);
-    const isInferenceRequest = _baseUrls === null;
-    const requestBaseUrls = _baseUrls ?? this.baseUrls;
-    const requestBaseUrl = requestBaseUrls[0];
+    const requestBaseUrls = _baseUrls ?? await this._activeBaseUrls();
     let attempt = 0;
+    let baseIndex = 0;
     while (true) {
+      const requestBaseUrl = requestBaseUrls[baseIndex];
       const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
@@ -580,6 +664,9 @@ export class TrustedRouter {
         ) {
           throw transportError(error);
         }
+        if (isInferenceRequest && baseIndex < requestBaseUrls.length - 1) {
+          baseIndex += 1;
+        }
         await sleep(retrySleepMs(attempt, null));
         attempt += 1;
         continue;
@@ -596,6 +683,13 @@ export class TrustedRouter {
         await response.text();
       } catch {
         /* ignore */
+      }
+      if (
+        isInferenceRequest &&
+        isRegionalFailoverable(response.status) &&
+        baseIndex < requestBaseUrls.length - 1
+      ) {
+        baseIndex += 1;
       }
       await sleep(retrySleepMs(attempt, parseRetryAfter(response.headers)));
       attempt += 1;

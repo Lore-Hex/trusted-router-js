@@ -67,6 +67,86 @@ test("constructor: defaults to apex when no baseUrl is given", () => {
   assert.deepEqual(c.baseUrls, [DEFAULT_API_BASE_URL]);
 });
 
+test("regional affinity pins fastest endpoint and preserves idempotency on failover", async () => {
+  const delays = new Map([
+    ["api-us-central1.quillrouter.com", 20],
+    ["api-us-east4.quillrouter.com", 5],
+    ["api-europe-west4.quillrouter.com", 35],
+    ["api.trustedrouter.com", 50],
+  ]);
+  const healthHosts = [];
+  const completedHealthHosts = [];
+  let healthAtFirstInference = [];
+  const inference = [];
+  const previousRandom = Math.random;
+  Math.random = () => 0;
+  const client = new TrustedRouter({
+    regionalAffinity: true,
+    maxRetries: 2,
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/health") {
+        healthHosts.push(parsed.hostname);
+        await new Promise((resolve) => setTimeout(resolve, delays.get(parsed.hostname)));
+        completedHealthHosts.push(parsed.hostname);
+        return jsonResponse(200, { status: "ok" });
+      }
+      if (inference.length === 0) healthAtFirstInference = [...completedHealthHosts];
+      inference.push({
+        host: parsed.hostname,
+        idempotencyKey: new Headers(init.headers).get("idempotency-key"),
+      });
+      if (inference.length === 1) {
+        return jsonResponse(503, { error: { message: "region draining" } });
+      }
+      return jsonResponse(200, { data: { ok: true } });
+    },
+  });
+  try {
+    const result = await client.request("POST", "/chat/completions", {
+      body: {},
+    });
+    assert.equal(result.data.ok, true);
+  } finally {
+    Math.random = previousRandom;
+  }
+
+  assert.equal(healthHosts.length, 4);
+  assert.deepEqual(healthAtFirstInference, ["api-us-east4.quillrouter.com"]);
+  assert.equal(inference[0].host, "api-us-east4.quillrouter.com");
+  assert.notEqual(inference[1].host, inference[0].host);
+  assert.match(inference[0].idempotencyKey, /^tr-req-/);
+  assert.equal(inference[1].idempotencyKey, inference[0].idempotencyKey);
+});
+
+test("regional affinity backs off on 429 without abandoning the pinned region", async () => {
+  const inferenceHosts = [];
+  const client = new TrustedRouter({
+    regionalAffinity: true,
+    maxRetries: 1,
+    fetchImpl: async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/health") {
+        if (parsed.hostname !== "api-us-east4.quillrouter.com") {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        return jsonResponse(200, { status: "ok" });
+      }
+      inferenceHosts.push(parsed.hostname);
+      return inferenceHosts.length === 1
+        ? jsonResponse(429, { error: { message: "provider busy" } })
+        : jsonResponse(200, { data: { ok: true } });
+    },
+  });
+
+  const result = await client.request("POST", "/chat/completions", { body: {} });
+
+  assert.equal(result.data.ok, true);
+  assert.equal(inferenceHosts.length, 2);
+  assert.equal(inferenceHosts[0], "api-us-east4.quillrouter.com");
+  assert.equal(inferenceHosts[0], inferenceHosts[1]);
+});
+
 test("controlBaseUrl override applies to control calls and OAuth URLs", async () => {
   let seenUrl;
   const c = new TrustedRouter({
