@@ -7,8 +7,21 @@ export declare const DEFAULT_REGION_PROBE_TIMEOUT_MS: 1500;
 export declare const REGION_BASE_URLS: ReadonlyArray<string>;
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
+export declare const ZDR_MODEL: "trustedrouter/zdr";
+export declare const E2E_MODEL: "trustedrouter/e2e";
+export declare const CONFIDENTIAL_MODEL: "trustedrouter/confidential";
+export declare const EU_MODEL: "trustedrouter/eu";
+export declare const US_MODEL: "trustedrouter/us";
 export declare const FUSION_MODEL: "trustedrouter/fusion";
+export declare const SYNTH_MODEL: "trustedrouter/synth";
 export declare const ADVISOR_MODEL: "trustedrouter/advisor";
+export declare const SELECTOR_MODEL: "trustedrouter/selector";
+export declare const MAP_REDUCE_MODEL: "trustedrouter/mapreduce";
+export declare const SUBAGENT_MODEL: "trustedrouter/subagent";
+export declare const SOCRATES_MODEL: "trustedrouter/socrates-1.1";
+export declare const PROMETHEUS_MODEL: "trustedrouter/prometheus-2.0";
+export declare const ZEUS_MODEL: "trustedrouter/zeus-1.0";
+export declare const ATHENA_MODEL: "trustedrouter/athena";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
 
@@ -19,6 +32,7 @@ export type FusionSelectionStrategy =
   | "first_non_refusal";
 
 export interface FusionToolOptions {
+  enabled?: boolean | null;
   analysisModels?: string[] | null;
   /** judge / synthesis model */
   model?: string | null;
@@ -28,6 +42,8 @@ export interface FusionToolOptions {
   maxCompletionTokens?: number | null;
   maxToolCalls?: number | null;
   preset?: "quality" | "budget" | "frontier" | null;
+  panelPrompt?: string | null;
+  synthesisPrompt?: string | null;
 }
 
 export interface FusionTool {
@@ -38,12 +54,15 @@ export interface FusionTool {
 export declare function fusionTool(options?: FusionToolOptions): FusionTool;
 
 export interface AdvisorToolOptions {
+  enabled?: boolean | null;
   depth?: number | null;
   workerModels?: string[] | null;
   advisorModels?: string[] | null;
   maxGetAdviceCalls?: number | null;
   advisorMaxTokens?: number | null;
+  workerTimeoutMs?: number | null;
   advisorTimeoutMs?: number | null;
+  autoInitialAdvice?: boolean | null;
 }
 
 export interface AdvisorTool {
@@ -53,11 +72,85 @@ export interface AdvisorTool {
 
 export declare function advisorTool(options?: AdvisorToolOptions): AdvisorTool;
 
+export interface SelectorToolOptions {
+  enabled?: boolean | null;
+  analysisModels?: string[] | null;
+  selectorModels?: string[] | null;
+  selectorPrompt?: string | null;
+  maxCompletionTokens?: number | null;
+}
+export interface SelectorTool {
+  type: "trustedrouter:selector";
+  parameters: Record<string, unknown>;
+}
+export declare function selectorTool(options?: SelectorToolOptions): SelectorTool;
+
+export interface MapReduceToolOptions {
+  enabled?: boolean | null;
+  mapperModels?: string[] | null;
+  parallelModels?: string[] | null;
+  reducerModels?: string[] | null;
+  maxParts?: number | null;
+  mapperPrompt?: string | null;
+  parallelPrompt?: string | null;
+  reducerPrompt?: string | null;
+  maxCompletionTokens?: number | null;
+}
+export interface MapReduceTool {
+  type: "trustedrouter:mapreduce";
+  parameters: Record<string, unknown>;
+}
+export declare function mapReduceTool(options?: MapReduceToolOptions): MapReduceTool;
+
+export interface SubagentToolOptions {
+  enabled?: boolean | null;
+  controllerModel?: string | null;
+  model?: string | null;
+  instructions?: string | null;
+  depth?: number | null;
+  maxSubagentCalls?: number | null;
+  maxCompletionTokens?: number | null;
+  temperature?: number | null;
+  reasoning?: unknown;
+  tools?: Array<Record<string, unknown>> | null;
+}
+export interface SubagentTool {
+  type: "trustedrouter:subagent";
+  parameters: Record<string, unknown>;
+}
+export declare function subagentTool(options?: SubagentToolOptions): SubagentTool;
+
+export interface ProviderPreferencesOptions {
+  order?: string[] | null;
+  only?: string[] | null;
+  ignore?: string[] | null;
+  sort?: "price" | "latency" | "throughput" | null;
+  allowFallbacks?: boolean | null;
+  requireParameters?: boolean | null;
+  dataCollection?: "allow" | "deny" | null;
+  minPrivacy?: "any" | "no_store" | "zdr" | "confidential" | "e2e" | "e2ee" | null;
+  jurisdiction?: "us" | null;
+  usage?: "credits" | "byok" | null;
+  quantizations?: string[] | null;
+  maxPrice?: Record<string, unknown> | null;
+}
+export declare class ProviderPreferences {
+  constructor(options?: ProviderPreferencesOptions);
+  static zdr(): ProviderPreferences;
+  static confidential(): ProviderPreferences;
+  static usOnly(): ProviderPreferences;
+  [key: string]: unknown;
+}
+
 // ---- error hierarchy ----------------------------------------------------
 
 export declare class TrustedRouterError extends Error {
   statusCode: number;
   payload: unknown;
+  layer: string | null;
+  source: string | null;
+  provider: string | null;
+  requestId: string | null;
   constructor(statusCode: number, message: string, payload?: unknown);
 }
 export declare class BadRequestError extends TrustedRouterError {}
@@ -220,6 +313,7 @@ export interface EmbeddingsRequest extends PerCallOptions {
   sessionId?: string | null;
   trace?: Record<string, unknown> | null;
   tags?: RequestTags | null;
+  provider?: ProviderPreferences | ProviderPreferencesOptions | null;
 }
 
 export interface MessagesRequest extends PerCallOptions {

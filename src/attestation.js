@@ -42,6 +42,7 @@ export async function policyFromTrustRelease({
   release = null,
   audience = "quill-cloud",
   certSha256 = null,
+  allowDebug = false,
   trustReleaseUrl = DEFAULT_TRUST_RELEASE_URL,
   fetchImpl = globalThis.fetch,
 } = {}) {
@@ -53,6 +54,7 @@ export async function policyFromTrustRelease({
     certSha256,
     imageDigest: release?.image_digest ?? null,
     imageReference: release?.image_reference ?? null,
+    allowDebug,
   };
 }
 
@@ -185,7 +187,10 @@ async function verifyRs256(jwks, header, signingInput, signature) {
 
 async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }) {
   const now = Math.floor(Date.now() / 1000);
-  if (typeof claims.exp === "number" && claims.exp <= now) {
+  if (!Number.isSafeInteger(claims.exp)) {
+    throw new AttestationVerificationError("JWT is missing a valid expiration");
+  }
+  if (claims.exp <= now) {
     throw new AttestationVerificationError(
       `JWT expired at ${claims.exp} (now=${now})`,
     );
@@ -195,9 +200,34 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
       `unexpected issuer ${JSON.stringify(claims.iss)}; expected ${GCP_ISSUER}`,
     );
   }
-  const audList = Array.isArray(claims.aud)
-    ? claims.aud
-    : (claims.aud != null ? [claims.aud] : []);
+  if (!policy.allowDebug && claims.dbgstat !== "disabled-since-boot") {
+    throw new AttestationVerificationError(
+      "debug Confidential Space workload must report disabled-since-boot",
+    );
+  }
+  if (claims.swname !== "CONFIDENTIAL_SPACE") {
+    throw new AttestationVerificationError(
+      "attested workload is not running Confidential Space",
+    );
+  }
+  if (claims.secboot !== true) {
+    throw new AttestationVerificationError(
+      "attested workload does not report Secure Boot",
+    );
+  }
+  if (!["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"].includes(claims.hwmodel)) {
+    throw new AttestationVerificationError(
+      `unsupported confidential hardware model ${JSON.stringify(claims.hwmodel)}`,
+    );
+  }
+  let audList;
+  if (typeof claims.aud === "string") {
+    audList = [claims.aud];
+  } else if (Array.isArray(claims.aud) && claims.aud.every((value) => typeof value === "string")) {
+    audList = claims.aud;
+  } else {
+    throw new AttestationVerificationError("JWT aud must be a string or string list");
+  }
   if (!audList.includes(policy.audience)) {
     throw new AttestationVerificationError(
       `audience ${JSON.stringify(policy.audience)} not in JWT aud ${JSON.stringify(audList)}`,
@@ -287,7 +317,7 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
     imageDigest,
     imageReference,
     nonce: nonceMatch,
-    expiresAt: typeof claims.exp === "number" ? claims.exp : null,
+    expiresAt: claims.exp,
     issuer: claims.iss ?? null,
     audience: policy.audience,
     rawClaims: claims,

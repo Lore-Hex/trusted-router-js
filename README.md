@@ -42,6 +42,31 @@ console.log(resp.choices[0].message.content);
 
 `chatCompletions(...)` defaults to `AUTO_MODEL` when `model` is omitted.
 
+## Routing, privacy, and orchestration
+
+The package exports stable aliases for normal routing (`AUTO_MODEL`,
+`FAST_MODEL`), privacy (`ZDR_MODEL`, `E2E_MODEL`, `CONFIDENTIAL_MODEL`,
+`EU_MODEL`, `US_MODEL`), and named orchestration models including
+`SOCRATES_MODEL`, `PROMETHEUS_MODEL`, `ZEUS_MODEL`, and `ATHENA_MODEL`.
+
+Use `ProviderPreferences` when privacy or US provider jurisdiction must remain
+a hard routing requirement with an explicit model. Use `EU_MODEL` for the
+EU-focused routing pool:
+
+```js
+import { ProviderPreferences } from "@lore-hex/trusted-router";
+
+const response = await client.chatCompletions({
+  model: "z-ai/glm-5.2",
+  messages: [{ role: "user", content: "Review this contract." }],
+  provider: ProviderPreferences.confidential(),
+});
+```
+
+All five atomic orchestration primitives have typed builders with matching
+wire formats across the official SDKs: `fusionTool` (Synth), `advisorTool`,
+`selectorTool`, `mapReduceTool`, and `subagentTool`.
+
 ## Cost allocation tags
 
 Attach up to 50 AWS-style string tags to any inference request. Tags remain
@@ -243,6 +268,10 @@ try {
 ```
 
 All subclasses inherit `TrustedRouterError`.
+
+Every error also carries `layer`, `source`, `provider`, and `requestId` when
+the server supplies them, so retry logic can distinguish router failures from
+provider failures without parsing human-readable messages.
 
 ## Automatic retries
 

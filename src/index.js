@@ -30,8 +30,21 @@ export const REGION_BASE_URLS = Object.freeze([
 ]);
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
+export const ZDR_MODEL = "trustedrouter/zdr";
+export const E2E_MODEL = "trustedrouter/e2e";
+export const CONFIDENTIAL_MODEL = "trustedrouter/confidential";
+export const EU_MODEL = "trustedrouter/eu";
+export const US_MODEL = "trustedrouter/us";
 export const FUSION_MODEL = "trustedrouter/fusion";
+export const SYNTH_MODEL = "trustedrouter/synth";
 export const ADVISOR_MODEL = "trustedrouter/advisor";
+export const SELECTOR_MODEL = "trustedrouter/selector";
+export const MAP_REDUCE_MODEL = "trustedrouter/mapreduce";
+export const SUBAGENT_MODEL = "trustedrouter/subagent";
+export const SOCRATES_MODEL = "trustedrouter/socrates-1.1";
+export const PROMETHEUS_MODEL = "trustedrouter/prometheus-2.0";
+export const ZEUS_MODEL = "trustedrouter/zeus-1.0";
+export const ATHENA_MODEL = "trustedrouter/athena";
 
 // Recommended panel + judge fallback chain for maximum willingness to answer.
 // Use gateway-supported latest aliases where possible so examples survive
@@ -58,6 +71,7 @@ export const FUSION_FREEDOM_FALLBACK_JUDGES = Object.freeze([
  * "synthesize_non_refusals").
  */
 export function fusionTool({
+  enabled = null,
   analysisModels = null,
   model = null, // judge / synthesis model
   selectionStrategy = null,
@@ -66,8 +80,11 @@ export function fusionTool({
   maxCompletionTokens = null,
   maxToolCalls = null,
   preset = null,
+  panelPrompt = null,
+  synthesisPrompt = null,
 } = {}) {
   const parameters = {};
+  if (enabled !== null) parameters.enabled = enabled;
   if (preset !== null) parameters.preset = preset;
   if (analysisModels !== null) parameters.analysis_models = analysisModels;
   if (model !== null) parameters.model = model;
@@ -76,6 +93,8 @@ export function fusionTool({
   if (fallbackFinalModels !== null) parameters.fallback_final_models = fallbackFinalModels;
   if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
   if (maxToolCalls !== null) parameters.max_tool_calls = maxToolCalls;
+  if (panelPrompt !== null) parameters.panel_prompt = panelPrompt;
+  if (synthesisPrompt !== null) parameters.synthesis_prompt = synthesisPrompt;
   return { type: "trustedrouter:fusion", parameters };
 }
 
@@ -86,14 +105,18 @@ export function fusionTool({
  * `_trustedrouter_get_advice` tool.
  */
 export function advisorTool({
+  enabled = null,
   depth = null,
   workerModels = null,
   advisorModels = null,
   maxGetAdviceCalls = null,
   advisorMaxTokens = null,
+  workerTimeoutMs = null,
   advisorTimeoutMs = null,
+  autoInitialAdvice = null,
 } = {}) {
   const parameters = {};
+  if (enabled !== null) parameters.enabled = enabled;
   if (depth !== null) parameters.depth = depth;
   if (workerModels !== null) parameters.worker_models = workerModels;
   if (advisorModels !== null) parameters.advisor_models = advisorModels;
@@ -101,8 +124,138 @@ export function advisorTool({
     parameters.max_get_advice_calls = maxGetAdviceCalls;
   }
   if (advisorMaxTokens !== null) parameters.advisor_max_tokens = advisorMaxTokens;
+  if (workerTimeoutMs !== null) parameters.worker_timeout_ms = workerTimeoutMs;
   if (advisorTimeoutMs !== null) parameters.advisor_timeout_ms = advisorTimeoutMs;
+  if (autoInitialAdvice !== null) parameters.auto_initial_advice = autoInitialAdvice;
   return { type: "trustedrouter:advisor", parameters };
+}
+
+/** Build a `trustedrouter:selector` tool spec. */
+export function selectorTool({
+  enabled = null,
+  analysisModels = null,
+  selectorModels = null,
+  selectorPrompt = null,
+  maxCompletionTokens = null,
+} = {}) {
+  const parameters = {};
+  if (enabled !== null) parameters.enabled = enabled;
+  if (analysisModels !== null) parameters.analysis_models = analysisModels;
+  if (selectorModels !== null) parameters.selector_models = selectorModels;
+  if (selectorPrompt !== null) parameters.selector_prompt = selectorPrompt;
+  if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
+  return { type: "trustedrouter:selector", parameters };
+}
+
+/** Build a `trustedrouter:mapreduce` tool spec. */
+export function mapReduceTool({
+  enabled = null,
+  mapperModels = null,
+  parallelModels = null,
+  reducerModels = null,
+  maxParts = null,
+  mapperPrompt = null,
+  parallelPrompt = null,
+  reducerPrompt = null,
+  maxCompletionTokens = null,
+} = {}) {
+  const parameters = {};
+  if (enabled !== null) parameters.enabled = enabled;
+  if (mapperModels !== null) parameters.mapper_models = mapperModels;
+  if (parallelModels !== null) parameters.parallel_models = parallelModels;
+  if (reducerModels !== null) parameters.reducer_models = reducerModels;
+  if (maxParts !== null) parameters.max_parts = maxParts;
+  if (mapperPrompt !== null) parameters.mapper_prompt = mapperPrompt;
+  if (parallelPrompt !== null) parameters.parallel_prompt = parallelPrompt;
+  if (reducerPrompt !== null) parameters.reducer_prompt = reducerPrompt;
+  if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
+  return { type: "trustedrouter:mapreduce", parameters };
+}
+
+/** Build a `trustedrouter:subagent` tool spec. */
+export function subagentTool({
+  enabled = null,
+  controllerModel = null,
+  model = null,
+  instructions = null,
+  depth = null,
+  maxSubagentCalls = null,
+  maxCompletionTokens = null,
+  temperature = null,
+  reasoning = null,
+  tools = null,
+} = {}) {
+  const parameters = {};
+  if (enabled !== null) parameters.enabled = enabled;
+  if (controllerModel !== null) parameters.controller_model = controllerModel;
+  if (model !== null) parameters.model = model;
+  if (instructions !== null) parameters.instructions = instructions;
+  if (depth !== null) parameters.depth = depth;
+  if (maxSubagentCalls !== null) parameters.max_subagent_calls = maxSubagentCalls;
+  if (maxCompletionTokens !== null) parameters.max_completion_tokens = maxCompletionTokens;
+  if (temperature !== null) parameters.temperature = temperature;
+  if (reasoning !== null) parameters.reasoning = reasoning;
+  if (tools !== null) parameters.tools = tools;
+  return { type: "trustedrouter:subagent", parameters };
+}
+
+/** Typed, JSON-serializable provider routing preferences. */
+export class ProviderPreferences {
+  constructor({
+    order = null,
+    only = null,
+    ignore = null,
+    sort = null,
+    allowFallbacks = null,
+    requireParameters = null,
+    dataCollection = null,
+    minPrivacy = null,
+    jurisdiction = null,
+    usage = null,
+    quantizations = null,
+    maxPrice = null,
+  } = {}) {
+    if (sort !== null && !["price", "latency", "throughput"].includes(String(sort).toLowerCase())) {
+      throw new TypeError("sort must be price, latency, or throughput");
+    }
+    if (dataCollection !== null && !["allow", "deny"].includes(String(dataCollection).toLowerCase())) {
+      throw new TypeError("dataCollection must be allow or deny");
+    }
+    if (minPrivacy !== null && !["any", "no_store", "zdr", "confidential", "e2e", "e2ee"].includes(String(minPrivacy).toLowerCase())) {
+      throw new TypeError("unsupported minPrivacy");
+    }
+    if (jurisdiction !== null && String(jurisdiction).toLowerCase() !== "us") {
+      throw new TypeError("jurisdiction currently supports only us");
+    }
+    if (usage !== null && !["credits", "byok"].includes(String(usage).toLowerCase())) {
+      throw new TypeError("usage must be credits or byok");
+    }
+    if (order !== null) this.order = [...order];
+    if (only !== null) this.only = [...only];
+    if (ignore !== null) this.ignore = [...ignore];
+    if (sort !== null) this.sort = String(sort).toLowerCase();
+    if (allowFallbacks !== null) this.allow_fallbacks = Boolean(allowFallbacks);
+    if (requireParameters !== null) this.require_parameters = Boolean(requireParameters);
+    if (dataCollection !== null) this.data_collection = String(dataCollection).toLowerCase();
+    if (minPrivacy !== null) this.min_privacy = String(minPrivacy).toLowerCase();
+    if (jurisdiction !== null) this.jurisdiction = "us";
+    if (usage !== null) this.usage = String(usage).toLowerCase();
+    if (quantizations !== null) this.quantizations = [...quantizations];
+    if (maxPrice !== null) this.max_price = { ...maxPrice };
+  }
+
+  static zdr() {
+    return new ProviderPreferences({ minPrivacy: "zdr", dataCollection: "deny" });
+  }
+
+  static confidential() {
+    return new ProviderPreferences({ minPrivacy: "confidential", dataCollection: "deny" });
+  }
+
+  static usOnly() {
+    return new ProviderPreferences({ jurisdiction: "us" });
+  }
+
 }
 
 const ADVISOR_MODELS = Object.freeze(new Set([ADVISOR_MODEL]));
@@ -129,7 +282,9 @@ function chatCompletionBody({ model, messages, params }) {
     ["advisorModels", "advisor_models"],
     ["maxGetAdviceCalls", "max_get_advice_calls"],
     ["advisorMaxTokens", "advisor_max_tokens"],
+    ["workerTimeoutMs", "worker_timeout_ms"],
     ["advisorTimeoutMs", "advisor_timeout_ms"],
+    ["autoInitialAdvice", "auto_initial_advice"],
   ]) {
     if (Object.hasOwn(bodyParams, sdkKey)) {
       if (bodyParams[sdkKey] !== null && bodyParams[sdkKey] !== undefined) {
@@ -218,6 +373,13 @@ export class TrustedRouterError extends Error {
     this.name = "TrustedRouterError";
     this.statusCode = statusCode;
     this.payload = payload;
+    const detail = payload?.error && typeof payload.error === "object"
+      ? payload.error
+      : (payload && typeof payload === "object" ? payload : {});
+    this.layer = typeof detail.layer === "string" ? detail.layer : null;
+    this.source = typeof detail.source === "string" ? detail.source : null;
+    this.provider = typeof detail.provider === "string" ? detail.provider : null;
+    this.requestId = typeof detail.request_id === "string" ? detail.request_id : null;
   }
 }
 
@@ -906,6 +1068,7 @@ export class TrustedRouter {
     sessionId = null,
     trace = null,
     tags = null,
+    provider = null,
   }) {
     const body = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
@@ -914,6 +1077,7 @@ export class TrustedRouter {
     if (sessionId !== null) body.session_id = sessionId;
     if (trace !== null) body.trace = trace;
     if (tags !== null) body.tags = tags;
+    if (provider !== null) body.provider = provider;
     return this.request("POST", "/embeddings", { body });
   }
 
@@ -1480,15 +1644,52 @@ export function collectCompletion(chunks) {
   }
   const parts = [];
   let finishReason = null;
+  let role = "assistant";
+  let usage = null;
+  const toolCalls = new Map();
   for (const c of chunks) {
+    if (c?.usage && typeof c.usage === "object") usage = c.usage;
     const choice = c?.choices?.[0];
     if (!choice) continue;
-    const content = choice?.delta?.content;
+    const delta = choice.delta ?? {};
+    if (typeof delta.role === "string") role = delta.role;
+    const content = delta.content;
     if (typeof content === "string") parts.push(content);
+    for (const call of delta.tool_calls ?? []) {
+      if (!call || typeof call !== "object") continue;
+      const index = call.index ?? 0;
+      let slot = toolCalls.get(index);
+      if (!slot) {
+        slot = {
+          index,
+          type: "function",
+          function: { name: "", arguments: "" },
+        };
+        toolCalls.set(index, slot);
+      }
+      if (call.id) slot.id = call.id;
+      if (call.type) slot.type = call.type;
+      if (call.function && typeof call.function === "object") {
+        if (call.function.name) slot.function.name = call.function.name;
+        if (typeof call.function.arguments === "string") {
+          slot.function.arguments += call.function.arguments;
+        }
+      }
+    }
     if (choice.finish_reason) finishReason = choice.finish_reason;
   }
   const last = chunks[chunks.length - 1];
-  return {
+  const content = parts.join("");
+  const message = {
+    role,
+    content: content || (toolCalls.size ? null : ""),
+  };
+  if (toolCalls.size) {
+    message.tool_calls = [...toolCalls.keys()]
+      .sort((a, b) => a - b)
+      .map((index) => toolCalls.get(index));
+  }
+  const result = {
     id: last?.id ?? "",
     object: "chat.completion",
     created: last?.created ?? 0,
@@ -1496,9 +1697,11 @@ export function collectCompletion(chunks) {
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: parts.join("") },
+        message,
         finish_reason: finishReason ?? "stop",
       },
     ],
   };
+  if (usage !== null) result.usage = usage;
+  return result;
 }

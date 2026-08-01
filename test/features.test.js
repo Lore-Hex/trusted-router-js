@@ -21,6 +21,7 @@ import {
   InternalError,
   NotFoundError,
   PermissionDeniedError,
+  ProviderPreferences,
   RateLimitError,
   TrustedRouter,
   TrustedRouterError,
@@ -506,6 +507,7 @@ test("embeddings: only sends provided optional fields", async () => {
     sessionId: "matter_456",
     trace: { source: "eval" },
     tags: { team: "legal" },
+    provider: ProviderPreferences.confidential(),
   });
   assert.deepEqual(bodies[0], { model: "text-embed", input: "hello" });
   assert.deepEqual(bodies[1], {
@@ -517,6 +519,7 @@ test("embeddings: only sends provided optional fields", async () => {
     session_id: "matter_456",
     trace: { source: "eval" },
     tags: { team: "legal" },
+    provider: { min_privacy: "confidential", data_collection: "deny" },
   });
 });
 
@@ -849,6 +852,45 @@ test("collectCompletion: ignores chunks with no choices and non-string content",
   ]);
   assert.equal(out.choices[0].message.content, "ok");
   assert.equal(out.choices[0].finish_reason, "length");
+});
+
+test("collectCompletion: aggregates fragmented tool calls and trailing usage", () => {
+  const out = collectCompletion([
+    {
+      id: "a",
+      choices: [{ delta: { role: "assistant", tool_calls: [{
+        index: 0,
+        id: "call_1",
+        type: "function",
+        function: { name: "get_weather", arguments: '{"ci' },
+      }] } }],
+    },
+    {
+      id: "b",
+      choices: [{ delta: { tool_calls: [{
+        index: 0,
+        function: { arguments: 'ty":"NYC"}' },
+      }] }, finish_reason: "tool_calls" }],
+    },
+    {
+      id: "b",
+      choices: [],
+      usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+    },
+  ]);
+  assert.equal(out.choices[0].message.content, null);
+  assert.equal(out.choices[0].finish_reason, "tool_calls");
+  assert.deepEqual(out.choices[0].message.tool_calls, [{
+    index: 0,
+    id: "call_1",
+    type: "function",
+    function: { name: "get_weather", arguments: '{"city":"NYC"}' },
+  }]);
+  assert.deepEqual(out.usage, {
+    prompt_tokens: 11,
+    completion_tokens: 7,
+    total_tokens: 18,
+  });
 });
 
 // ---- Anthropic + Anthropic chat path: ensure stream= true is set ------
