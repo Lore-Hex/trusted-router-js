@@ -21,6 +21,7 @@ import {
   InternalError,
   NotFoundError,
   PermissionDeniedError,
+  ProviderPreferences,
   RateLimitError,
   TrustedRouter,
   TrustedRouterError,
@@ -355,7 +356,10 @@ test("extraHeaders propagate to chat request", async () => {
   const c = new TrustedRouter({
     apiKey: "k",
     fetchImpl: async (_url, init) => {
-      seen = new Headers(init.headers);
+      seen = {
+        headers: new Headers(init.headers),
+        body: JSON.parse(init.body),
+      };
       return sseResponse(
         'data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n' +
         'data: [DONE]\n\n',
@@ -366,8 +370,12 @@ test("extraHeaders propagate to chat request", async () => {
   await c.chatCompletions({
     messages: [{ role: "user", content: "hi" }],
     extraHeaders: { "x-trace-id": "abc-123" },
+    tags: { team: "legal" },
+    session_id: "matter-456",
   });
-  assert.equal(seen.get("x-trace-id"), "abc-123");
+  assert.equal(seen.headers.get("x-trace-id"), "abc-123");
+  assert.deepEqual(seen.body.tags, { team: "legal" });
+  assert.equal(seen.body.session_id, "matter-456");
 });
 
 test("chat workspaceId override is header and not request body", async () => {
@@ -496,6 +504,10 @@ test("embeddings: only sends provided optional fields", async () => {
     encodingFormat: "base64",
     dimensions: 512,
     user: "u_42",
+    sessionId: "matter_456",
+    trace: { source: "eval" },
+    tags: { team: "legal" },
+    provider: ProviderPreferences.confidential(),
   });
   assert.deepEqual(bodies[0], { model: "text-embed", input: "hello" });
   assert.deepEqual(bodies[1], {
@@ -504,6 +516,10 @@ test("embeddings: only sends provided optional fields", async () => {
     encoding_format: "base64",
     dimensions: 512,
     user: "u_42",
+    session_id: "matter_456",
+    trace: { source: "eval" },
+    tags: { team: "legal" },
+    provider: { min_privacy: "confidential", data_collection: "deny" },
   });
 });
 
@@ -536,10 +552,12 @@ test("messages: sends Anthropic-shape body", async () => {
     messages: [{ role: "user", content: "hello" }],
     maxTokens: 64,
     system: "be helpful",
+    tags: { team: "legal" },
   });
   assert.equal(body.model, "anthropic/claude-3-5-sonnet");
   assert.equal(body.max_tokens, 64);
   assert.equal(body.system, "be helpful");
+  assert.deepEqual(body.tags, { team: "legal" });
 });
 
 test("responses: sends workspaceId as header and not request body", async () => {
@@ -566,6 +584,9 @@ test("responses: sends workspaceId as header and not request body", async () => 
     workspaceId: "ws_override",
     instructions: "be terse",
     metadata: { source: "test" },
+    tags: { team: "legal" },
+    user: "user-123",
+    session_id: "matter-456",
   });
   assert.equal(response.id, "resp_1");
   assert.equal(seen.workspace, "ws_override");
@@ -573,6 +594,9 @@ test("responses: sends workspaceId as header and not request body", async () => 
   assert.equal(seen.body.model, AUTO_MODEL);
   assert.equal(seen.body.input, "ping");
   assert.equal(seen.body.stream, false);
+  assert.deepEqual(seen.body.tags, { team: "legal" });
+  assert.equal(seen.body.user, "user-123");
+  assert.equal(seen.body.session_id, "matter-456");
   assert.equal("workspaceId" in seen.body, false);
 });
 
@@ -828,6 +852,45 @@ test("collectCompletion: ignores chunks with no choices and non-string content",
   ]);
   assert.equal(out.choices[0].message.content, "ok");
   assert.equal(out.choices[0].finish_reason, "length");
+});
+
+test("collectCompletion: aggregates fragmented tool calls and trailing usage", () => {
+  const out = collectCompletion([
+    {
+      id: "a",
+      choices: [{ delta: { role: "assistant", tool_calls: [{
+        index: 0,
+        id: "call_1",
+        type: "function",
+        function: { name: "get_weather", arguments: '{"ci' },
+      }] } }],
+    },
+    {
+      id: "b",
+      choices: [{ delta: { tool_calls: [{
+        index: 0,
+        function: { arguments: 'ty":"NYC"}' },
+      }] }, finish_reason: "tool_calls" }],
+    },
+    {
+      id: "b",
+      choices: [],
+      usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+    },
+  ]);
+  assert.equal(out.choices[0].message.content, null);
+  assert.equal(out.choices[0].finish_reason, "tool_calls");
+  assert.deepEqual(out.choices[0].message.tool_calls, [{
+    index: 0,
+    id: "call_1",
+    type: "function",
+    function: { name: "get_weather", arguments: '{"city":"NYC"}' },
+  }]);
+  assert.deepEqual(out.usage, {
+    prompt_tokens: 11,
+    completion_tokens: 7,
+    total_tokens: 18,
+  });
 });
 
 // ---- Anthropic + Anthropic chat path: ensure stream= true is set ------

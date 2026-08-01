@@ -79,6 +79,10 @@ async function goodClaims({ nonce = null } = {}) {
     iss: GCP_ISSUER,
     aud: ["quill-cloud"],
     exp: Math.floor(Date.now() / 1000) + 600,
+    dbgstat: "disabled-since-boot",
+    swname: "CONFIDENTIAL_SPACE",
+    secboot: true,
+    hwmodel: "GCP_AMD_SEV",
     submods: {
       container: {
         image_digest: "sha256:abc123",
@@ -192,6 +196,68 @@ test("verify: expired JWT raises", async () => {
   await assert.rejects(
     verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud", imageDigest: null, imageReference: null }, jwks: { keys: [await publicJwk(kp)] } }),
     /expired/,
+  );
+});
+
+for (const exp of [undefined, "soon", true]) {
+  test(`verify: invalid expiration ${String(exp)} raises`, async () => {
+    const kp = await genKeypair();
+    const claims = await goodClaims();
+    if (exp === undefined) delete claims.exp;
+    else claims.exp = exp;
+    const jwt = await makeJwt(kp, claims);
+    await assert.rejects(
+      verifyGatewayAttestation(jwt, {
+        policy: { audience: "quill-cloud" },
+        jwks: { keys: [await publicJwk(kp)] },
+      }),
+      /valid expiration/,
+    );
+  });
+}
+
+for (const field of ["dbgstat", "swname", "secboot", "hwmodel"]) {
+  test(`verify: missing production claim ${field} raises`, async () => {
+    const kp = await genKeypair();
+    const claims = await goodClaims();
+    delete claims[field];
+    const jwt = await makeJwt(kp, claims);
+    await assert.rejects(
+      verifyGatewayAttestation(jwt, {
+        policy: { audience: "quill-cloud" },
+        jwks: { keys: [await publicJwk(kp)] },
+      }),
+      AttestationVerificationError,
+    );
+  });
+}
+
+test("verify: debug workload requires explicit development opt-out", async () => {
+  const kp = await genKeypair();
+  const claims = { ...(await goodClaims()), dbgstat: "enabled" };
+  const jwt = await makeJwt(kp, claims);
+  const jwks = { keys: [await publicJwk(kp)] };
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, { policy: { audience: "quill-cloud" }, jwks }),
+    /disabled-since-boot/,
+  );
+  const result = await verifyGatewayAttestation(jwt, {
+    policy: { audience: "quill-cloud", allowDebug: true },
+    jwks,
+  });
+  assert.equal(result.rawClaims.dbgstat, "enabled");
+});
+
+test("verify: invalid audience shape raises", async () => {
+  const kp = await genKeypair();
+  const claims = { ...(await goodClaims()), aud: { "quill-cloud": true } };
+  const jwt = await makeJwt(kp, claims);
+  await assert.rejects(
+    verifyGatewayAttestation(jwt, {
+      policy: { audience: "quill-cloud" },
+      jwks: { keys: [await publicJwk(kp)] },
+    }),
+    /aud must/,
   );
 });
 

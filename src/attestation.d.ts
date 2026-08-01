@@ -10,6 +10,7 @@ export interface AttestationPolicy {
   imageDigest: string | null;
   imageReference: string | null;
   certSha256?: string | null;
+  allowDebug?: boolean;
 }
 
 export interface GatewayAttestation {
@@ -27,6 +28,7 @@ export declare function policyFromTrustRelease(opts?: {
   release?: Record<string, unknown> | null;
   audience?: string;
   certSha256?: string | null;
+  allowDebug?: boolean;
   trustReleaseUrl?: string;
   fetchImpl?: typeof fetch;
 }): Promise<AttestationPolicy>;

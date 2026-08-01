@@ -152,6 +152,10 @@ async function makeAttestationBody(keyPair, {
     iss: GCP_ISSUER,
     aud: [audience],
     exp: Math.floor(Date.now() / 1000) + 600,
+    dbgstat: "disabled-since-boot",
+    swname: "CONFIDENTIAL_SPACE",
+    secboot: true,
+    hwmodel: "GCP_AMD_SEV",
     submods: {
       container: {
         image_digest: imageDigest,
@@ -407,6 +411,10 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
           iss: GCP_ISSUER,
           aud: ["quill-cloud"],
           exp: Math.floor(Date.now() / 1000) + 600,
+          dbgstat: "disabled-since-boot",
+          swname: "CONFIDENTIAL_SPACE",
+          secboot: true,
+          hwmodel: "GCP_AMD_SEV",
           submods: {
             container: {
               image_digest: "sha256:loopback",
