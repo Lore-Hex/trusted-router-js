@@ -109,6 +109,8 @@ export interface PerCallOptions {
   timeout?: number | null;
 }
 
+export type RequestTags = Record<string, string>;
+
 export interface RequestOptions
   extends Omit<RequestInit, "headers" | "body">, PerCallOptions {
   headers?: TrustedRouterHeaders;
@@ -167,6 +169,10 @@ export interface ChatCompletionChunk {
 export interface ChatRequest extends PerCallOptions {
   model?: string;
   messages: Array<Record<string, unknown>>;
+  tags?: RequestTags | null;
+  user?: string | null;
+  session_id?: string | null;
+  trace?: Record<string, unknown> | null;
   depth?: number | null;
   workerModels?: string[] | null;
   advisorModels?: string[] | null;
@@ -211,12 +217,16 @@ export interface EmbeddingsRequest extends PerCallOptions {
   encodingFormat?: string | null;
   dimensions?: number | null;
   user?: string | null;
+  sessionId?: string | null;
+  trace?: Record<string, unknown> | null;
+  tags?: RequestTags | null;
 }
 
 export interface MessagesRequest extends PerCallOptions {
   model: string;
   messages: Array<Record<string, unknown>>;
   maxTokens?: number;
+  tags?: RequestTags | null;
   [extra: string]: unknown;
 }
 
@@ -224,6 +234,10 @@ export interface ResponsesRequest extends PerCallOptions {
   model?: string;
   input: string | Array<Record<string, unknown>>;
   instructions?: string | null;
+  tags?: RequestTags | null;
+  user?: string | null;
+  session_id?: string | null;
+  trace?: Record<string, unknown> | null;
   [extra: string]: unknown;
 }
 
