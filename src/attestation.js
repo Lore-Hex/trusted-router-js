@@ -49,11 +49,29 @@ export async function policyFromTrustRelease({
   if (release === null) {
     release = await fetchTrustRelease({ trustUrl: trustReleaseUrl, fetchImpl });
   }
+  const imageDigest = release?.image_digest ?? null;
+  const publishedDigests = Array.isArray(release?.accepted_image_digests)
+    ? release.accepted_image_digests.filter(
+      (value) => typeof value === "string" && value.length > 0,
+    )
+    : [];
+  const imageReference = release?.image_reference ?? null;
+  const publishedReferences = Array.isArray(release?.accepted_image_references)
+    ? release.accepted_image_references.filter(
+      (value) => typeof value === "string" && value.length > 0,
+    )
+    : [];
   return {
     audience,
     certSha256,
-    imageDigest: release?.image_digest ?? null,
-    imageReference: release?.image_reference ?? null,
+    imageDigest,
+    imageDigests: publishedDigests.length > 0
+      ? publishedDigests
+      : (imageDigest ? [imageDigest] : []),
+    imageReference,
+    imageReferences: publishedReferences.length > 0
+      ? publishedReferences
+      : (imageReference ? [imageReference] : []),
     allowDebug,
   };
 }
@@ -238,16 +256,22 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
   const imageDigest = submods.image_digest || "";
   const imageReference = submods.image_reference || "";
 
-  if (policy.imageDigest && imageDigest !== policy.imageDigest) {
+  const acceptedImageDigests = Array.isArray(policy.imageDigests) && policy.imageDigests.length > 0
+    ? policy.imageDigests
+    : (policy.imageDigest ? [policy.imageDigest] : []);
+  if (acceptedImageDigests.length > 0 && !acceptedImageDigests.includes(imageDigest)) {
     throw new AttestationVerificationError(
       `image_digest mismatch: workload=${JSON.stringify(imageDigest)}, ` +
-      `policy=${JSON.stringify(policy.imageDigest)}`,
+      `policy=${JSON.stringify(acceptedImageDigests)}`,
     );
   }
-  if (policy.imageReference && imageReference !== policy.imageReference) {
+  const acceptedImageReferences = Array.isArray(policy.imageReferences) && policy.imageReferences.length > 0
+    ? policy.imageReferences
+    : (policy.imageReference ? [policy.imageReference] : []);
+  if (acceptedImageReferences.length > 0 && !acceptedImageReferences.includes(imageReference)) {
     throw new AttestationVerificationError(
       `image_reference mismatch: workload=${JSON.stringify(imageReference)}, ` +
-      `policy=${JSON.stringify(policy.imageReference)}`,
+      `policy=${JSON.stringify(acceptedImageReferences)}`,
     );
   }
 
