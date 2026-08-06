@@ -8,7 +8,9 @@ export declare class AttestationVerificationError extends Error {}
 export interface AttestationPolicy {
   audience: string;
   imageDigest: string | null;
+  imageDigests?: string[];
   imageReference: string | null;
+  imageReferences?: string[];
   certSha256?: string | null;
   allowDebug?: boolean;
 }

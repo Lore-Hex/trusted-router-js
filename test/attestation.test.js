@@ -417,18 +417,49 @@ test("policyFromTrustRelease pulls digest + reference from release dict", async 
   const policy = await policyFromTrustRelease({
     release: {
       image_digest: "sha256:beef",
+      accepted_image_digests: ["sha256:old", "sha256:beef"],
       image_reference: "us-central1-docker.pkg.dev/p/r/i:tag",
+      accepted_image_references: [
+        "us-central1-docker.pkg.dev/p/r/i:old",
+        "us-central1-docker.pkg.dev/p/r/i:tag",
+      ],
     },
   });
   assert.equal(policy.imageDigest, "sha256:beef");
+  assert.deepEqual(policy.imageDigests, ["sha256:old", "sha256:beef"]);
   assert.equal(policy.imageReference, "us-central1-docker.pkg.dev/p/r/i:tag");
+  assert.deepEqual(policy.imageReferences, [
+    "us-central1-docker.pkg.dev/p/r/i:old",
+    "us-central1-docker.pkg.dev/p/r/i:tag",
+  ]);
   assert.equal(policy.audience, "quill-cloud");
 });
 
 test("policyFromTrustRelease handles missing fields with nulls", async () => {
   const policy = await policyFromTrustRelease({ release: {} });
   assert.equal(policy.imageDigest, null);
+  assert.deepEqual(policy.imageDigests, []);
   assert.equal(policy.imageReference, null);
+  assert.deepEqual(policy.imageReferences, []);
+});
+
+test("verify: rollout policy accepts any published image", async () => {
+  const kp = await genKeypair();
+  const jwt = await makeJwt(kp, await goodClaims());
+  const result = await verifyGatewayAttestation(jwt, {
+    policy: {
+      audience: "quill-cloud",
+      imageDigest: "sha256:new",
+      imageDigests: ["sha256:abc123", "sha256:new"],
+      imageReference: "us-central1-docker.pkg.dev/proj/repo/img:new",
+      imageReferences: [
+        "us-central1-docker.pkg.dev/proj/repo/img:tag",
+        "us-central1-docker.pkg.dev/proj/repo/img:new",
+      ],
+    },
+    jwks: { keys: [await publicJwk(kp)] },
+  });
+  assert.equal(result.imageDigest, "sha256:abc123");
 });
 
 test("AttestationVerificationError exposes name", () => {
