@@ -307,7 +307,9 @@ test("chatCompletionsText yields parsed SSE text deltas", async () => {
   assert.deepEqual(tokens, ["hel", "lo"]);
 });
 
-test("inference requests re-request the apex on 503", async () => {
+// Renamed: it asserted the retry re-hit the apex, which a one-entry
+// candidate list forced. Real failover moves to the first alias domain.
+test("inference requests fail over to an alias on 503", async () => {
   const hosts = [];
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",
@@ -334,11 +336,11 @@ test("inference requests re-request the apex on 503", async () => {
   );
   assert.deepEqual(hosts, [
     "api.trustedrouter.com",
-    "api.trustedrouter.com",
+    "api.allyrouter.com",
   ]);
 });
 
-test("transport errors are retried against the apex", async () => {
+test("transport errors fail over to an alias", async () => {
   const hosts = [];
   const client = new TrustedRouter({
     apiKey: "sk-tr-test",
@@ -362,7 +364,7 @@ test("transport errors are retried against the apex", async () => {
   );
   assert.deepEqual(hosts, [
     "api.trustedrouter.com",
-    "api.trustedrouter.com",
+    "api.allyrouter.com",
   ]);
 });
 
@@ -427,7 +429,7 @@ test("streaming rawRequest fails over before returning error response", async ()
   assert.deepEqual(tokens, ["OK"]);
   assert.deepEqual(hosts, [
     "api.trustedrouter.com",
-    "api.trustedrouter.com",
+    "api.allyrouter.com",
   ]);
   assert.match(idempotencyKeys[0], /^tr-req-/);
   assert.deepEqual(idempotencyKeys, [idempotencyKeys[0], idempotencyKeys[0]]);
