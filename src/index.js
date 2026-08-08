@@ -28,6 +28,18 @@ export const REGION_BASE_URLS = Object.freeze([
   "https://api-us-east4.quillrouter.com/v1",
   "https://api-europe-west4.quillrouter.com/v1",
 ]);
+
+// Exact aliases of the primary API, on separate domains served by separate DNS
+// providers (trustedrouter.com from Google Cloud DNS, these two from Route 53).
+// They resolve to the same attested enclaves.
+//
+// The domain is a single point of failure sitting above the whole deployment: a
+// zone that stops answering, a registrar lock, or a stale resolver record takes
+// the API down however many clouds are behind it.
+export const ALIAS_API_BASE_URLS = Object.freeze([
+  "https://api.allyrouter.com/v1",
+  "https://api.uptimerouter.com/v1",
+]);
 export const AUTO_MODEL = "trustedrouter/auto";
 export const FAST_MODEL = "trustedrouter/fast";
 export const ZDR_MODEL = "trustedrouter/zdr";
@@ -468,7 +480,17 @@ function isRegionalFailoverable(statusCode) {
 }
 
 function baseUrls(primaryBaseUrl) {
-  return [primaryBaseUrl.replace(/\/+$/, "")];
+  // This list MUST have more than one entry or failover cannot engage: every
+  // advance below is guarded by `baseIndex < requestBaseUrls.length - 1`, so a
+  // single-entry list made those branches unreachable.
+  //
+  // Aliases are appended only for the default host. A caller who passed their
+  // own baseUrl (private deployment, test server, regional pin) gets exactly
+  // that; silently redirecting their traffic to a public alias would be worse
+  // than failing.
+  const primary = primaryBaseUrl.replace(/\/+$/, "");
+  if (primary !== DEFAULT_API_BASE_URL.replace(/\/+$/, "")) return [primary];
+  return [...new Set([primary, ...ALIAS_API_BASE_URLS.map((u) => u.replace(/\/+$/, ""))])];
 }
 
 function regionCandidates(primaryBaseUrl) {

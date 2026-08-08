@@ -65,7 +65,10 @@ test("constructor: defaults to apex when no baseUrl is given", () => {
   assert.equal(c.baseUrl, DEFAULT_API_BASE_URL);
   assert.equal(c.controlBaseUrl, DEFAULT_CONTROL_BASE_URL);
   assert.equal(c.regionalFailover, true);
-  assert.deepEqual(c.baseUrls, [DEFAULT_API_BASE_URL]);
+  // Primary first, then the aliases. A one-entry list makes every failover
+  // branch unreachable, which is what it used to be.
+  assert.equal(c.baseUrls[0], DEFAULT_API_BASE_URL);
+  assert.ok(c.baseUrls.length > 1);
 });
 
 test("regional affinity pins fastest endpoint and preserves idempotency on failover", async () => {

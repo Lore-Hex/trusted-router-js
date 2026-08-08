@@ -5,6 +5,7 @@ export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com
 export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
 export declare const DEFAULT_REGION_PROBE_TIMEOUT_MS: 1500;
 export declare const REGION_BASE_URLS: ReadonlyArray<string>;
+export declare const ALIAS_API_BASE_URLS: ReadonlyArray<string>;
 export declare const AUTO_MODEL: "trustedrouter/auto";
 export declare const FAST_MODEL: "trustedrouter/fast";
 export declare const ZDR_MODEL: "trustedrouter/zdr";
