@@ -36,19 +36,11 @@ import {
 } from "./internal/errors.js";
 import {
   DEFAULT_USER_AGENT,
-  activeBaseUrls,
   baseUrls as inferenceBaseUrls,
-  buildHeaders,
-  fetchWithTimeout,
-  isRegionalFailoverable,
   newIdempotencyKey,
   parseRetryAfter,
   requestJson,
-  retrySleepMs,
-  serializeBody,
-  shouldRetryTransport,
-  sleep,
-  transportError,
+  requestStream,
 } from "./internal/transport.js";
 import {
   broadcastDestinationBody,
@@ -181,93 +173,7 @@ export class TrustedRouter {
    * the SSE bytes directly.
    */
   async rawRequest(method, path, init = {}) {
-    const {
-      _baseUrls = null,
-      headers = {},
-      body,
-      apiKey = null,
-      idempotencyKey = null,
-      timeout = null,
-      extraHeaders = null,
-      workspaceId = null,
-      ...rest
-    } = init;
-    const isInferenceRequest = _baseUrls === null;
-    const requestIdempotencyKey = idempotencyKey ?? (
-      isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
-        ? newIdempotencyKey()
-        : null
-    );
-    const requestHeaders = buildHeaders(this, {
-      headers,
-      extraHeaders,
-      idempotencyKey: requestIdempotencyKey,
-      apiKey,
-      workspaceId,
-    });
-    const requestBody = serializeBody(body, requestHeaders);
-    const requestBaseUrls = _baseUrls ?? await activeBaseUrls(this);
-    let attempt = 0;
-    let baseIndex = 0;
-    while (true) {
-      const requestBaseUrl = requestBaseUrls[baseIndex];
-      const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
-      let response;
-      try {
-        response = await fetchWithTimeout(
-          this,
-          url,
-          {
-            method,
-            headers: requestHeaders,
-            body: requestBody,
-            ...rest,
-          },
-          timeout,
-        );
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        if (
-          attempt >= this.maxRetries ||
-          !shouldRetryTransport(isInferenceRequest, this.regionalFailover)
-        ) {
-          throw transportError(error);
-        }
-        if (
-          isInferenceRequest &&
-          this.regionalFailover &&
-          baseIndex < requestBaseUrls.length - 1
-        ) {
-          baseIndex += 1;
-        }
-        await sleep(retrySleepMs(attempt, null));
-        attempt += 1;
-        continue;
-      }
-      if (
-        attempt >= this.maxRetries ||
-        !isRegionalFailoverable(response.status, response.headers) ||
-        !isInferenceRequest ||
-        !this.regionalFailover
-      ) {
-        return response;
-      }
-      try {
-        await response.text();
-      } catch {
-        /* ignore */
-      }
-      if (
-        isInferenceRequest &&
-        this.regionalFailover &&
-        isRegionalFailoverable(response.status, response.headers) &&
-        baseIndex < requestBaseUrls.length - 1
-      ) {
-        baseIndex += 1;
-      }
-      await sleep(retrySleepMs(attempt, parseRetryAfter(response.headers)));
-      attempt += 1;
-    }
+    return requestStream(this, method, path, init);
   }
 
   _controlRequest(method, path, init = {}) {

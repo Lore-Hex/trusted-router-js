@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Internal restructure onto the harmonized cross-SDK architecture: policy
+  kernel, candidate set, transport engine, attempt assembly, stream codec,
+  error taxonomy, orchestration builders, and client facade now live in
+  `src/internal/*` behind the unchanged `src/index.js` barrel. Public API and
+  import paths are byte-identical.
+- INTENDED behavior change: the streaming-open path (`rawRequest`,
+  `chatCompletionsChunks`, `chatCompletionsRawStream`, `responsesEvents`,
+  `responsesRawStream`) now shares the buffered path's full retry semantics.
+  Previously it retried only 502/503/504, ignored `x-should-retry: true`,
+  skipped 429 backoff, and `regionalFailover: false` disabled ALL streaming
+  retries. Now: the `x-should-retry` verdict wins in both directions, 429 and
+  5xx are retried with jittered backoff honoring `retry-after(-ms)`, and a
+  pinned client retries in place. Retries still happen only before any body
+  bytes are surfaced; a broken open stream propagates and never reconnects.
+
 ## 0.4.0
 
 - Changed the default inference base URL to `https://api.trustedrouter.com/v1`.
