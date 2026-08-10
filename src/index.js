@@ -54,6 +54,7 @@ import {
   randomOAuthState,
 } from "./internal/pkce.js";
 import { collectCompletion, iterSseChunks, iterSseEvents } from "./internal/sse.js";
+import { fetchTrustRelease } from "./internal/trust.js";
 
 export {
   ADVISOR_MODEL,
@@ -104,6 +105,7 @@ export {
 } from "./internal/orchestration.js";
 export { createOAuthPkcePair, randomOAuthState } from "./internal/pkce.js";
 export { collectCompletion } from "./internal/sse.js";
+export { fetchTrustRelease, trustRelease } from "./internal/trust.js";
 
 // ---- main client -------------------------------------------------------
 
@@ -685,24 +687,6 @@ export class TrustedRouter {
     return fetchTrustRelease({ trustUrl: url, fetchImpl: this.fetch });
   }
 }
-
-// ---- module-level helpers ----------------------------------------------
-
-export async function fetchTrustRelease({
-  trustUrl = DEFAULT_TRUST_RELEASE_URL,
-  fetchImpl = globalThis.fetch,
-} = {}) {
-  if (!fetchImpl) {
-    throw new Error("A fetch implementation is required");
-  }
-  return jsonOrThrow(
-    await fetchImpl(trustUrl, {
-      headers: { "user-agent": DEFAULT_USER_AGENT },
-    }),
-  );
-}
-
-export const trustRelease = fetchTrustRelease;
 
 // ---- internals ---------------------------------------------------------
 

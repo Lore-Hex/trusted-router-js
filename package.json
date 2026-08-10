@@ -39,7 +39,7 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/attestation.js && node --check src/session.js && node --check src/oauth.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/sse.js && node --check src/internal/transport.js",
+    "check": "node --check src/index.js && node --check src/attestation.js && node --check src/session.js && node --check src/oauth.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/sse.js && node --check src/internal/transport.js && node --check src/internal/trust.js",
     "test": "node --test"
   },
   "engines": {
