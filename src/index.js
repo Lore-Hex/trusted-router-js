@@ -29,6 +29,11 @@ import {
   VERSION,
   modelsPath,
 } from "./internal/models.js";
+import {
+  callbackUrlWithState,
+  createOAuthPkcePair,
+  randomOAuthState,
+} from "./internal/pkce.js";
 import { collectCompletion, iterSseChunks, iterSseEvents } from "./internal/sse.js";
 
 export {
@@ -61,6 +66,7 @@ export {
   ZDR_MODEL,
   ZEUS_MODEL,
 } from "./internal/models.js";
+export { createOAuthPkcePair, randomOAuthState } from "./internal/pkce.js";
 export { collectCompletion } from "./internal/sse.js";
 
 /**
@@ -488,55 +494,6 @@ function newIdempotencyKey() {
   }
   const suffix = Math.random().toString(36).slice(2);
   return `tr-req-${Date.now().toString(36)}-${suffix}`;
-}
-
-// ---- browser OAuth / PKCE helpers -------------------------------------
-
-export function randomOAuthState({ byteLength = 16 } = {}) {
-  return randomBase64Url(byteLength);
-}
-
-export async function createOAuthPkcePair({ codeVerifier = null } = {}) {
-  const verifier = codeVerifier ?? randomBase64Url(32);
-  return {
-    codeVerifier: verifier,
-    codeChallenge: await sha256Base64Url(verifier),
-    codeChallengeMethod: "S256",
-  };
-}
-
-function randomBase64Url(byteLength) {
-  if (!globalThis.crypto?.getRandomValues) {
-    throw new Error("Web Crypto getRandomValues is required");
-  }
-  const bytes = new Uint8Array(byteLength);
-  globalThis.crypto.getRandomValues(bytes);
-  return base64UrlEncodeBytes(bytes);
-}
-
-async function sha256Base64Url(text) {
-  if (!globalThis.crypto?.subtle) {
-    throw new Error("Web Crypto subtle digest is required");
-  }
-  const bytes = new TextEncoder().encode(text);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return base64UrlEncodeBytes(new Uint8Array(digest));
-}
-
-function base64UrlEncodeBytes(bytes) {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  const encoded =
-    typeof btoa === "function"
-      ? btoa(binary)
-      : Buffer.from(binary, "binary").toString("base64");
-  return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function callbackUrlWithState(callbackUrl, state) {
-  const url = new URL(callbackUrl);
-  url.searchParams.set("state", state);
-  return url.toString();
 }
 
 // ---- user agent --------------------------------------------------------
