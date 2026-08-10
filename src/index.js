@@ -30,6 +30,27 @@ import {
   modelsPath,
 } from "./internal/models.js";
 import {
+  classifyError,
+  jsonOrThrow,
+  throwFromResponse,
+} from "./internal/errors.js";
+import {
+  DEFAULT_USER_AGENT,
+  activeBaseUrls,
+  baseUrls as inferenceBaseUrls,
+  buildHeaders,
+  fetchWithTimeout,
+  isRegionalFailoverable,
+  newIdempotencyKey,
+  parseRetryAfter,
+  requestJson,
+  retrySleepMs,
+  serializeBody,
+  shouldRetryTransport,
+  sleep,
+  transportError,
+} from "./internal/transport.js";
+import {
   broadcastDestinationBody,
   chatCompletionBody,
   fusionTool,
@@ -73,6 +94,16 @@ export {
   ZEUS_MODEL,
 } from "./internal/models.js";
 export {
+  AuthenticationError,
+  BadRequestError,
+  EndpointNotSupportedError,
+  InternalError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+  TrustedRouterError,
+} from "./internal/errors.js";
+export {
   advisorTool,
   fusionTool,
   mapReduceTool,
@@ -81,223 +112,6 @@ export {
 } from "./internal/orchestration.js";
 export { createOAuthPkcePair, randomOAuthState } from "./internal/pkce.js";
 export { collectCompletion } from "./internal/sse.js";
-
-// ---- error hierarchy ---------------------------------------------------
-
-export class TrustedRouterError extends Error {
-  constructor(statusCode, message, payload) {
-    super(message);
-    this.name = "TrustedRouterError";
-    this.statusCode = statusCode;
-    this.payload = payload;
-    const detail = payload?.error && typeof payload.error === "object"
-      ? payload.error
-      : (payload && typeof payload === "object" ? payload : {});
-    this.layer = typeof detail.layer === "string" ? detail.layer : null;
-    this.source = typeof detail.source === "string" ? detail.source : null;
-    this.provider = typeof detail.provider === "string" ? detail.provider : null;
-    this.requestId = typeof detail.request_id === "string" ? detail.request_id : null;
-  }
-}
-
-export class BadRequestError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "BadRequestError";
-  }
-}
-
-export class AuthenticationError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "AuthenticationError";
-  }
-}
-
-export class PermissionDeniedError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "PermissionDeniedError";
-  }
-}
-
-export class NotFoundError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "NotFoundError";
-  }
-}
-
-export class EndpointNotSupportedError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "EndpointNotSupportedError";
-  }
-}
-
-export class RateLimitError extends TrustedRouterError {
-  constructor(statusCode, message, payload, retryAfter = null) {
-    super(statusCode, message, payload);
-    this.name = "RateLimitError";
-    this.retryAfter = retryAfter;
-  }
-}
-
-export class InternalError extends TrustedRouterError {
-  constructor(...args) {
-    super(...args);
-    this.name = "InternalError";
-  }
-}
-
-function classifyError(statusCode, message, payload, retryAfter) {
-  if (statusCode === 401)
-    return new AuthenticationError(statusCode, message, payload);
-  if (statusCode === 403)
-    return new PermissionDeniedError(statusCode, message, payload);
-  if (statusCode === 404)
-    return new NotFoundError(statusCode, message, payload);
-  if (statusCode === 429)
-    return new RateLimitError(statusCode, message, payload, retryAfter);
-  if (statusCode === 501)
-    return new EndpointNotSupportedError(statusCode, message, payload);
-  if (statusCode >= 400 && statusCode < 500)
-    return new BadRequestError(statusCode, message, payload);
-  if (statusCode >= 500) return new InternalError(statusCode, message, payload);
-  return new TrustedRouterError(statusCode, message, payload);
-}
-
-function readHeader(headers, name) {
-  return headers?.get?.(name) ?? headers?.[name] ?? null;
-}
-
-function parseRetryAfter(headers) {
-  // retry-after-ms wins when both are present: it is the more precise of the
-  // two, and a server that sends it means the sub-second value.
-  const rawMs = readHeader(headers, "retry-after-ms");
-  if (rawMs) {
-    const ms = Number(String(rawMs).trim());
-    if (Number.isFinite(ms) && ms >= 0) return ms / 1000;
-  }
-  const raw = readHeader(headers, "retry-after");
-  if (!raw) return null;
-  const n = Number(String(raw).trim());
-  return Number.isFinite(n) && n >= 0 ? n : null;
-}
-
-// The gateway's explicit verdict, which overrides every heuristic below it.
-//
-// A status code cannot say whether a provider already ran. A 502 from "could
-// not reach the provider" and a 502 from "the generation succeeded and then
-// settlement failed" are indistinguishable here, and only the second is
-// dangerous to re-send. The gateway knows and says so. Same header OpenAI's
-// clients honour.
-//
-// Returns null when the server did not say, which leaves existing behaviour
-// untouched for older gateways and for deliberately unlabelled paths.
-function shouldRetryVerdict(headers) {
-  const raw = readHeader(headers, "x-should-retry");
-  if (raw == null) return null;
-  const value = String(raw).trim().toLowerCase();
-  if (value === "true") return true;
-  if (value === "false") return false;
-  return null;
-}
-
-// ---- retry policy ------------------------------------------------------
-
-function isRetryable(statusCode) {
-  return statusCode === 429 || statusCode >= 500;
-}
-
-// May this move to a DIFFERENT domain. An explicit `x-should-retry: false`
-// forbids it outright: that is the gateway saying a provider already ran, which
-// is exactly when re-sending anywhere costs a second generation.
-function isRegionalFailoverable(statusCode, headers) {
-  if (shouldRetryVerdict(headers) === false) return false;
-  return statusCode === 502 || statusCode === 503 || statusCode === 504;
-}
-
-function baseUrls(primaryBaseUrl) {
-  // This list MUST have more than one entry or failover cannot engage: every
-  // advance below is guarded by `baseIndex < requestBaseUrls.length - 1`, so a
-  // single-entry list made those branches unreachable.
-  //
-  // Aliases are appended only for the default host. A caller who passed their
-  // own baseUrl (private deployment, test server, regional pin) gets exactly
-  // that; silently redirecting their traffic to a public alias would be worse
-  // than failing.
-  const primary = primaryBaseUrl.replace(/\/+$/, "");
-  if (primary !== DEFAULT_API_BASE_URL.replace(/\/+$/, "")) return [primary];
-  return [...new Set([primary, ...ALIAS_API_BASE_URLS.map((u) => u.replace(/\/+$/, ""))])];
-}
-
-function regionCandidates(primaryBaseUrl) {
-  return [...new Set([...REGION_BASE_URLS, primaryBaseUrl.replace(/\/+$/, "")])];
-}
-
-function healthyRegionStatus(statusCode) {
-  return statusCode === 200 || statusCode === 401;
-}
-
-// May we send this again — independent of WHERE it goes.
-//
-// This used to return `regionalFailover` for inference 502/503/504, so pinning
-// to one host ALSO stopped retrying the gateway statuses entirely: one switch
-// answering two questions. regionalFailover now governs only the destination.
-function shouldRetryResponse(statusCode, _isInferenceRequest, _regionalFailover, headers) {
-  const verdict = shouldRetryVerdict(headers);
-  if (verdict !== null) return verdict;
-  return isRetryable(statusCode);
-}
-
-// A transport failure means no server saw the request, so it is always safe to
-// send again; regionalFailover only decides whether the retry may change host.
-function shouldRetryTransport(_isInferenceRequest, _regionalFailover) {
-  return true;
-}
-
-function transportError(error) {
-  const message =
-    error && typeof error.message === "string" ? error.message : String(error);
-  return new InternalError(
-    503,
-    `TrustedRouter endpoint unavailable: ${message}`,
-    null,
-  );
-}
-
-function retrySleepMs(attempt, retryAfterSeconds) {
-  // Exponential backoff with full jitter, capped at 30s. Honor
-  // retry-after as a floor.
-  const baseMs = Math.min(30_000, 500 * 2 ** attempt);
-  const jittered = Math.random() * baseMs;
-  const floor = (retryAfterSeconds ?? 0) * 1000;
-  return Math.max(jittered, floor);
-}
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function newIdempotencyKey() {
-  if (globalThis.crypto?.randomUUID) {
-    return `tr-req-${globalThis.crypto.randomUUID()}`;
-  }
-  const suffix = Math.random().toString(36).slice(2);
-  return `tr-req-${Date.now().toString(36)}-${suffix}`;
-}
-
-// ---- user agent --------------------------------------------------------
-
-function userAgent() {
-  const node =
-    typeof process !== "undefined" && process.versions?.node
-      ? `node/${process.versions.node}`
-      : "browser";
-  const platform = typeof process !== "undefined" ? process.platform : "web";
-  return `trusted-router-js/${VERSION} ${node} ${platform}`;
-}
-
-const DEFAULT_USER_AGENT = userAgent();
 
 // ---- main client -------------------------------------------------------
 
@@ -349,147 +163,16 @@ export class TrustedRouter {
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
     this.regionalFailover =
       regionalFailover === null ? true : Boolean(regionalFailover);
-    this.baseUrls = baseUrls(this.baseUrl);
+    this.baseUrls = inferenceBaseUrls(this.baseUrl);
     this.regionProbeTimeout = Math.max(100, Number(regionProbeTimeout) || 0);
     this.regionAffinityPending = useRegionalAffinity && this.regionalFailover;
     this.regionAffinityPromise = null;
   }
 
-  async _activeBaseUrls() {
-    if (!this.regionAffinityPending) return this.baseUrls;
-    if (!this.regionAffinityPromise) {
-      this.regionAffinityPromise = this._rankRegionalBaseUrls();
-    }
-    this.baseUrls = await this.regionAffinityPromise;
-    this.regionAffinityPending = false;
-    return this.baseUrls;
-  }
-
-  async _rankRegionalBaseUrls() {
-    const candidates = regionCandidates(this.baseUrl);
-    let winner = null;
-    try {
-      winner = await Promise.any(
-        candidates.map(async (baseUrl) => {
-          const response = await this._fetchWithTimeout(
-            `${baseUrl.replace(/\/v1$/, "")}/health`,
-            { method: "GET", headers: { accept: "application/json" } },
-            this.regionProbeTimeout,
-          );
-          try {
-            await response.text();
-          } catch {
-            // Status is still enough to rank a liveness response.
-          }
-          if (!healthyRegionStatus(response.status)) {
-            throw new Error("unhealthy regional gateway");
-          }
-          return baseUrl;
-        }),
-      );
-    } catch {
-      return [this.baseUrl];
-    }
-    return [...new Set([winner, this.baseUrl, ...candidates])];
-  }
-
   // ---- core request loop ----------------------------------------------
 
   async request(method, path, init = {}) {
-    const {
-      _baseUrls = null,
-      headers = {},
-      body,
-      apiKey = null,
-      idempotencyKey = null,
-      timeout = null,
-      extraHeaders = null,
-      workspaceId = null,
-      ...rest
-    } = init;
-
-    const isInferenceRequest = _baseUrls === null;
-    const requestIdempotencyKey = idempotencyKey ?? (
-      isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
-        ? newIdempotencyKey()
-        : null
-    );
-    const requestHeaders = this._buildHeaders({
-      headers,
-      extraHeaders,
-      idempotencyKey: requestIdempotencyKey,
-      apiKey,
-      workspaceId,
-    });
-    const requestBody = serializeBody(body, requestHeaders);
-
-    const requestBaseUrls = _baseUrls ?? await this._activeBaseUrls();
-    let attempt = 0;
-    let baseIndex = 0;
-    while (true) {
-      const requestBaseUrl = requestBaseUrls[baseIndex];
-      const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
-      let response;
-      try {
-        response = await this._fetchWithTimeout(
-          url,
-          {
-            method,
-            headers: requestHeaders,
-            body: requestBody,
-            ...rest,
-          },
-          timeout,
-        );
-      } catch (error) {
-        if (error?.name === "AbortError") throw error;
-        if (
-          attempt >= this.maxRetries ||
-          !shouldRetryTransport(isInferenceRequest, this.regionalFailover)
-        ) {
-          throw transportError(error);
-        }
-        if (
-          isInferenceRequest &&
-          this.regionalFailover &&
-          baseIndex < requestBaseUrls.length - 1
-        ) {
-          baseIndex += 1;
-        }
-        await sleep(retrySleepMs(attempt, null));
-        attempt += 1;
-        continue;
-      }
-
-      if (
-        attempt >= this.maxRetries ||
-        !shouldRetryResponse(
-          response.status,
-          isInferenceRequest,
-          this.regionalFailover,
-          response.headers,
-        )
-      ) {
-        return jsonOrThrow(response);
-      }
-      const retryAfter = parseRetryAfter(response.headers);
-      // Drain the response so we don't leak a connection while sleeping.
-      try {
-        await response.text();
-      } catch {
-        /* ignore */
-      }
-      if (
-        isInferenceRequest &&
-        this.regionalFailover &&
-        isRegionalFailoverable(response.status, response.headers) &&
-        baseIndex < requestBaseUrls.length - 1
-      ) {
-        baseIndex += 1;
-      }
-      await sleep(retrySleepMs(attempt, retryAfter));
-      attempt += 1;
-    }
+    return requestJson(this, method, path, init);
   }
 
   /**
@@ -515,7 +198,7 @@ export class TrustedRouter {
         ? newIdempotencyKey()
         : null
     );
-    const requestHeaders = this._buildHeaders({
+    const requestHeaders = buildHeaders(this, {
       headers,
       extraHeaders,
       idempotencyKey: requestIdempotencyKey,
@@ -523,7 +206,7 @@ export class TrustedRouter {
       workspaceId,
     });
     const requestBody = serializeBody(body, requestHeaders);
-    const requestBaseUrls = _baseUrls ?? await this._activeBaseUrls();
+    const requestBaseUrls = _baseUrls ?? await activeBaseUrls(this);
     let attempt = 0;
     let baseIndex = 0;
     while (true) {
@@ -531,7 +214,8 @@ export class TrustedRouter {
       const url = `${requestBaseUrl}/${String(path).replace(/^\/+/, "")}`;
       let response;
       try {
-        response = await this._fetchWithTimeout(
+        response = await fetchWithTimeout(
+          this,
           url,
           {
             method,
@@ -591,49 +275,6 @@ export class TrustedRouter {
       ...init,
       _baseUrls: [this.controlBaseUrl],
     });
-  }
-
-  _buildHeaders({
-    headers,
-    extraHeaders,
-    idempotencyKey,
-    apiKey,
-    workspaceId,
-  }) {
-    const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
-    for (const [k, v] of Object.entries(this.defaultHeaders)) out.set(k, v);
-    if (headers) {
-      const it =
-        headers instanceof Headers
-          ? headers.entries()
-          : Object.entries(headers);
-      for (const [k, v] of it) out.set(k, v);
-    }
-    if (extraHeaders) {
-      for (const [k, v] of Object.entries(extraHeaders)) out.set(k, v);
-    }
-    if (idempotencyKey) out.set("idempotency-key", idempotencyKey);
-    const selectedWorkspaceId = workspaceId ?? this.workspaceId;
-    if (selectedWorkspaceId)
-      out.set("x-trustedrouter-workspace", selectedWorkspaceId);
-    const bearer = apiKey ?? this.apiKey;
-    if (bearer && !out.has("authorization")) {
-      out.set("authorization", `Bearer ${bearer}`);
-    }
-    return out;
-  }
-
-  async _fetchWithTimeout(url, init, timeoutMs) {
-    if (!timeoutMs) {
-      return this.fetch(url, init);
-    }
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await this.fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(id);
-    }
   }
 
   // ---- chat ------------------------------------------------------------
@@ -1159,65 +800,5 @@ export const trustRelease = fetchTrustRelease;
 
 // ---- internals ---------------------------------------------------------
 
-function serializeBody(body, headers) {
-  if (!body || typeof body === "string") return body;
-  if (typeof FormData !== "undefined" && body instanceof FormData) return body;
-  if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
-    return body;
-  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer)
-    return body;
-  if (!headers.has("content-type")) {
-    headers.set("content-type", "application/json");
-  }
-  return JSON.stringify(body);
-}
 
-async function jsonOrThrow(response) {
-  const text = await response.text();
-  let payload = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { message: text };
-    }
-  }
-  if (!response.ok) {
-    throw classifyError(
-      response.status,
-      errorMessage(payload) || response.statusText || "TrustedRouter error",
-      payload,
-      parseRetryAfter(response.headers),
-    );
-  }
-  return payload ?? {};
-}
-
-async function throwFromResponse(response) {
-  const text = await response.text().catch(() => "");
-  let payload = null;
-  if (text) {
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { message: text };
-    }
-  }
-  throw classifyError(
-    response.status,
-    errorMessage(payload) || response.statusText || "TrustedRouter error",
-    payload,
-    parseRetryAfter(response.headers),
-  );
-}
-
-function errorMessage(payload) {
-  if (payload && typeof payload === "object") {
-    if (payload.error && typeof payload.error === "object") {
-      return payload.error.message || payload.error.type;
-    }
-    return payload.message;
-  }
-  return undefined;
-}
 
