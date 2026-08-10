@@ -462,11 +462,41 @@ function classifyError(statusCode, message, payload, retryAfter) {
   return new TrustedRouterError(statusCode, message, payload);
 }
 
+function readHeader(headers, name) {
+  return headers?.get?.(name) ?? headers?.[name] ?? null;
+}
+
 function parseRetryAfter(headers) {
-  const raw = headers.get?.("retry-after") ?? headers["retry-after"] ?? null;
+  // retry-after-ms wins when both are present: it is the more precise of the
+  // two, and a server that sends it means the sub-second value.
+  const rawMs = readHeader(headers, "retry-after-ms");
+  if (rawMs) {
+    const ms = Number(String(rawMs).trim());
+    if (Number.isFinite(ms) && ms >= 0) return ms / 1000;
+  }
+  const raw = readHeader(headers, "retry-after");
   if (!raw) return null;
   const n = Number(String(raw).trim());
   return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// The gateway's explicit verdict, which overrides every heuristic below it.
+//
+// A status code cannot say whether a provider already ran. A 502 from "could
+// not reach the provider" and a 502 from "the generation succeeded and then
+// settlement failed" are indistinguishable here, and only the second is
+// dangerous to re-send. The gateway knows and says so. Same header OpenAI's
+// clients honour.
+//
+// Returns null when the server did not say, which leaves existing behaviour
+// untouched for older gateways and for deliberately unlabelled paths.
+function shouldRetryVerdict(headers) {
+  const raw = readHeader(headers, "x-should-retry");
+  if (raw == null) return null;
+  const value = String(raw).trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
 }
 
 // ---- retry policy ------------------------------------------------------
@@ -475,7 +505,11 @@ function isRetryable(statusCode) {
   return statusCode === 429 || statusCode >= 500;
 }
 
-function isRegionalFailoverable(statusCode) {
+// May this move to a DIFFERENT domain. An explicit `x-should-retry: false`
+// forbids it outright: that is the gateway saying a provider already ran, which
+// is exactly when re-sending anywhere costs a second generation.
+function isRegionalFailoverable(statusCode, headers) {
+  if (shouldRetryVerdict(headers) === false) return false;
   return statusCode === 502 || statusCode === 503 || statusCode === 504;
 }
 
@@ -501,16 +535,21 @@ function healthyRegionStatus(statusCode) {
   return statusCode === 200 || statusCode === 401;
 }
 
-function shouldRetryResponse(statusCode, isInferenceRequest, regionalFailover) {
-  if (!isRetryable(statusCode)) return false;
-  if (isInferenceRequest && isRegionalFailoverable(statusCode)) {
-    return regionalFailover;
-  }
-  return true;
+// May we send this again — independent of WHERE it goes.
+//
+// This used to return `regionalFailover` for inference 502/503/504, so pinning
+// to one host ALSO stopped retrying the gateway statuses entirely: one switch
+// answering two questions. regionalFailover now governs only the destination.
+function shouldRetryResponse(statusCode, _isInferenceRequest, _regionalFailover, headers) {
+  const verdict = shouldRetryVerdict(headers);
+  if (verdict !== null) return verdict;
+  return isRetryable(statusCode);
 }
 
-function shouldRetryTransport(isInferenceRequest, regionalFailover) {
-  return !isInferenceRequest || regionalFailover;
+// A transport failure means no server saw the request, so it is always safe to
+// send again; regionalFailover only decides whether the retry may change host.
+function shouldRetryTransport(_isInferenceRequest, _regionalFailover) {
+  return true;
 }
 
 function transportError(error) {
@@ -754,7 +793,11 @@ export class TrustedRouter {
         ) {
           throw transportError(error);
         }
-        if (isInferenceRequest && baseIndex < requestBaseUrls.length - 1) {
+        if (
+          isInferenceRequest &&
+          this.regionalFailover &&
+          baseIndex < requestBaseUrls.length - 1
+        ) {
           baseIndex += 1;
         }
         await sleep(retrySleepMs(attempt, null));
@@ -768,6 +811,7 @@ export class TrustedRouter {
           response.status,
           isInferenceRequest,
           this.regionalFailover,
+          response.headers,
         )
       ) {
         return jsonOrThrow(response);
@@ -781,7 +825,8 @@ export class TrustedRouter {
       }
       if (
         isInferenceRequest &&
-        isRegionalFailoverable(response.status) &&
+        this.regionalFailover &&
+        isRegionalFailoverable(response.status, response.headers) &&
         baseIndex < requestBaseUrls.length - 1
       ) {
         baseIndex += 1;
@@ -848,7 +893,11 @@ export class TrustedRouter {
         ) {
           throw transportError(error);
         }
-        if (isInferenceRequest && baseIndex < requestBaseUrls.length - 1) {
+        if (
+          isInferenceRequest &&
+          this.regionalFailover &&
+          baseIndex < requestBaseUrls.length - 1
+        ) {
           baseIndex += 1;
         }
         await sleep(retrySleepMs(attempt, null));
@@ -857,7 +906,7 @@ export class TrustedRouter {
       }
       if (
         attempt >= this.maxRetries ||
-        !isRegionalFailoverable(response.status) ||
+        !isRegionalFailoverable(response.status, response.headers) ||
         !isInferenceRequest ||
         !this.regionalFailover
       ) {
@@ -870,7 +919,8 @@ export class TrustedRouter {
       }
       if (
         isInferenceRequest &&
-        isRegionalFailoverable(response.status) &&
+        this.regionalFailover &&
+        isRegionalFailoverable(response.status, response.headers) &&
         baseIndex < requestBaseUrls.length - 1
       ) {
         baseIndex += 1;

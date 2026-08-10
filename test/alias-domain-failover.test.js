@@ -71,7 +71,9 @@ test("a 503 from the primary reaches an alias", async () => {
 
 test("a 500 does NOT move to another domain", async () => {
   // A 500 means a server received and processed the request. Inference is not
-  // idempotent, so retrying it on another domain risks charging twice.
+  // idempotent. The caller is not charged twice (authorization is idempotent
+  // per Idempotency-Key, settlement is exactly-once) but the work would run
+  // again, costing TrustedRouter a second upstream generation.
   const seen = [];
   const sdk = clientWithFetch(async (url) => {
     seen.push(new URL(url).host);
