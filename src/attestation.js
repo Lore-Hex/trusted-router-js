@@ -17,7 +17,7 @@
  * Node 20+ and any modern browser.
  */
 
-import { fetchTrustRelease, DEFAULT_TRUST_RELEASE_URL } from "./index.js";
+import { fetchTrustRelease, DEFAULT_TRUST_RELEASE_URL } from "./internal/trust.js";
 
 export const GCP_ISSUER = "https://confidentialcomputing.googleapis.com";
 export const GCP_JWKS_URI =
