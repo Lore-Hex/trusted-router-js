@@ -15,6 +15,14 @@ export interface AttestationPolicy {
   allowDebug?: boolean;
 }
 
+/**
+ * Whether the policy constrains which workload image is acceptable. A policy
+ * pinning neither a digest nor a reference cannot distinguish the gateway from
+ * any other attested Confidential Space workload; both policy construction and
+ * verification refuse one.
+ */
+export declare function pinsImageIdentity(policy: AttestationPolicy | null | undefined): boolean;
+
 export interface GatewayAttestation {
   certSha256: string;
   imageDigest: string;
