@@ -34,9 +34,37 @@ export class AttestationVerificationError extends Error {
 }
 
 /**
+ * Whether a policy constrains *which* workload image is acceptable.
+ *
+ * Both image checks in `verifyGatewayAttestation` are guarded on a non-empty
+ * accepted list, so a policy pinning neither a digest nor a reference accepts
+ * any genuinely-attested Confidential Space workload — it proves "some CSP VM"
+ * rather than "the gateway build we published". Policy construction and
+ * verification both refuse that state rather than silently downgrading the
+ * guarantee.
+ *
+ * @param {import("./attestation.d.ts").AttestationPolicy} policy
+ * @returns {boolean}
+ */
+export function pinsImageIdentity(policy) {
+  if (!policy) return false;
+  const digests = Array.isArray(policy.imageDigests) ? policy.imageDigests : [];
+  const references = Array.isArray(policy.imageReferences) ? policy.imageReferences : [];
+  return Boolean(
+    digests.length > 0 ||
+    policy.imageDigest ||
+    references.length > 0 ||
+    policy.imageReference,
+  );
+}
+
+/**
  * Build a verification policy from the published trust release. If
  * `release` is omitted, fetches it from `trustReleaseUrl`. The
  * audience defaults to "quill-cloud" — the gateway hard-codes this.
+ *
+ * Throws AttestationVerificationError when the release carries no image
+ * identity at all, rather than returning a policy that would verify nothing.
  */
 export async function policyFromTrustRelease({
   release = null,
@@ -61,7 +89,7 @@ export async function policyFromTrustRelease({
       (value) => typeof value === "string" && value.length > 0,
     )
     : [];
-  return {
+  const policy = {
     audience,
     certSha256,
     imageDigest,
@@ -74,6 +102,18 @@ export async function policyFromTrustRelease({
       : (imageReference ? [imageReference] : []),
     allowDebug,
   };
+  if (!pinsImageIdentity(policy)) {
+    // A truncated body, an error page that happens to parse as JSON, or a
+    // schema change all land here. Returning the policy anyway would leave the
+    // caller believing it verified a specific build while both image checks
+    // silently no-op, so refuse where the degraded input is still visible.
+    throw new AttestationVerificationError(
+      "trust release pins no image identity (none of image_digest, " +
+      "accepted_image_digests, image_reference, accepted_image_references); " +
+      "refusing to build a policy that would accept any Confidential Space workload",
+    );
+  }
+  return policy;
 }
 
 /**
@@ -249,6 +289,16 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
   if (!audList.includes(policy.audience)) {
     throw new AttestationVerificationError(
       `audience ${JSON.stringify(policy.audience)} not in JWT aud ${JSON.stringify(audList)}`,
+    );
+  }
+
+  if (!pinsImageIdentity(policy)) {
+    // Defence in depth for hand-built policies: both image checks below are
+    // guarded on a non-empty accepted list, so reaching them with nothing
+    // pinned would accept any attested workload.
+    throw new AttestationVerificationError(
+      "attestation policy pins no image identity; refusing to verify against a " +
+      "policy that cannot distinguish the gateway from any other workload",
     );
   }
 
