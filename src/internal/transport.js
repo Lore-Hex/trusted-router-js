@@ -80,18 +80,42 @@ export function readHeader(headers, name) {
   return headers?.get?.(name) ?? headers?.[name] ?? null;
 }
 
+/**
+ * Ceiling on a server-supplied Retry-After floor.
+ *
+ * Retry-After arrives from whatever answered the socket — the gateway, a proxy
+ * in front of it, an alias domain — so it is untrusted input, and it was being
+ * applied as an *uncapped* floor on the sleep. Non-finite values were already
+ * rejected here, but finite-and-absurd ones were accepted silently:
+ * `Retry-After: 100000` parks a caller for 27.8 hours per attempt, and
+ * `1e300` produced a delay Node then clamped to 1 ms with a
+ * TimeoutOverflowWarning — a hot retry loop dressed as a long wait.
+ *
+ * 60 s is above any hint a healthy gateway sends and far below the point where
+ * a caller would rather have the error. Matches MAX_RETRY_AFTER_SECONDS in
+ * trusted-router-py so both SDKs accept the same header language.
+ */
+export const MAX_RETRY_AFTER_SECONDS = 60;
+
+/** Clamp a parsed hint into [0, MAX_RETRY_AFTER_SECONDS], or reject it.
+ *  Rejects exactly {NaN, ±Infinity, negatives} — the set the Python SDK
+ *  rejects — so the two cannot drift on acceptance. */
+function boundedRetryAfter(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.min(seconds, MAX_RETRY_AFTER_SECONDS);
+}
+
 export function parseRetryAfter(headers) {
   // retry-after-ms wins when both are present: it is the more precise of the
   // two, and a server that sends it means the sub-second value.
   const rawMs = readHeader(headers, "retry-after-ms");
   if (rawMs) {
-    const ms = Number(String(rawMs).trim());
-    if (Number.isFinite(ms) && ms >= 0) return ms / 1000;
+    const bounded = boundedRetryAfter(Number(String(rawMs).trim()) / 1000);
+    if (bounded !== null) return bounded;
   }
   const raw = readHeader(headers, "retry-after");
   if (!raw) return null;
-  const n = Number(String(raw).trim());
-  return Number.isFinite(n) && n >= 0 ? n : null;
+  return boundedRetryAfter(Number(String(raw).trim()));
 }
 
 // The gateway's explicit verdict, which overrides every heuristic below it.
@@ -154,11 +178,14 @@ export function transportError(error) {
 
 export function retrySleepMs(attempt, retryAfterSeconds) {
   // Exponential backoff with full jitter, capped at 30s. Honor
-  // retry-after as a floor.
+  // retry-after as a floor — bounded, so a hostile or broken hint cannot
+  // park the caller.
   const baseMs = Math.min(30_000, 500 * 2 ** attempt);
   const jittered = Math.random() * baseMs;
-  const floor = (retryAfterSeconds ?? 0) * 1000;
-  return Math.max(jittered, floor);
+  const floor = (boundedRetryAfter(retryAfterSeconds ?? 0) ?? 0) * 1000;
+  // Re-clamp rather than trusting the caller: retrySleepMs is exported and
+  // called directly, so the bound belongs on the value that reaches setTimeout.
+  return Math.min(Math.max(jittered, floor), Math.max(30_000, MAX_RETRY_AFTER_SECONDS * 1000));
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
