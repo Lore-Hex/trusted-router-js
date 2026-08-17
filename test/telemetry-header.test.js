@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { getEventListeners } from "node:events";
 import test from "node:test";
 
 import { DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
+import { iterSseChunks } from "../src/internal/sse.js";
 import {
   RequestRecorder,
   classifyTransportError,
@@ -894,3 +896,317 @@ test("concurrent logical calls keep independent recorder histories", async () =>
     }
   });
 });
+
+// ---- cancellation reaches the RESPONSE BODY ------------------------------
+//
+// `fetch` resolves at the response HEADERS; the body is read afterwards, by
+// jsonOrThrow for buffered calls and by the SSE codec for streaming ones. So
+// the relay that carries the caller's abort into the SDK's timeout controller
+// has to outlive the fetch promise — and must not outlive the BODY, or a
+// caller reusing one signal accumulates a listener per attempt. Every test
+// below drives the real engine (performRequest via the client) with an
+// injected transport.
+
+const encoder = new TextEncoder();
+
+function newSeen() {
+  return { headers: [], signals: [], bodiesDelivered: 0, bodiesCut: 0 };
+}
+
+/**
+ * A transport shaped like undici: headers resolve immediately, the body
+ * arrives `delayMs` later, and ONLY the signal handed to THIS fetch can cut
+ * the body — it errors the stream with that signal's reason. Hand it a signal
+ * the caller's abort never reaches and the body simply completes, which is
+ * exactly the defect this section pins.
+ */
+function delayedBodyFetch(seen, { delayMs = 1_000, chunks = ['{"ok":true}'] } = {}) {
+  return async (url, init) => {
+    seen.headers.push(init.headers.get("x-tr-client"));
+    seen.signals.push(init.signal ?? null);
+    const signal = init.signal;
+    const body = new ReadableStream({
+      start(controller) {
+        // The first chunk rides along with the headers; the rest is withheld
+        // until `delayMs`, which is the window a cancellation must survive.
+        controller.enqueue(encoder.encode(chunks[0]));
+        const timer = setTimeout(() => {
+          for (const chunk of chunks.slice(1)) {
+            controller.enqueue(encoder.encode(chunk));
+          }
+          seen.bodiesDelivered += 1;
+          controller.close();
+        }, delayMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          seen.bodiesCut += 1;
+          controller.error(signal.reason);
+        };
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+for (const [label, perCall] of [
+  ["with the SDK timeout option alongside it", { timeout: 5_000 }],
+  ["with no SDK timeout option (control)", {}],
+]) {
+  test(`a cancellation raised while the body streams cuts the request ${label}`, async () => {
+    await withEnv(scrubbed, async () => {
+      const seen = newSeen();
+      const sdk = clientWithFetch(delayedBodyFetch(seen));
+      const controller = new AbortController();
+      const reason = new Error("caller stopped");
+      // Headers are already in by now; the body is still withheld.
+      setTimeout(() => controller.abort(reason), 20);
+      let thrown = null;
+      await assert.rejects(
+        sdk.request("POST", "/embeddings", {
+          body: { model: "m", input: "x" },
+          signal: controller.signal,
+          ...perCall,
+        }),
+        (error) => {
+          thrown = error;
+          return true;
+        },
+      );
+      assert.equal(thrown, reason, "the caller's own reason must surface");
+      assert.equal(seen.bodiesCut, 1, "the body read must actually be cut");
+      assert.equal(seen.bodiesDelivered, 0, "the body must not finish after the abort");
+      // The signal fetch was handed carries the abort, reason intact.
+      assert.equal(seen.signals[0].aborted, true);
+      assert.equal(seen.signals[0].reason, reason);
+      // Terminal: one attempt, and no second header blaming a host.
+      assert.deepEqual(seen.headers, ["v=1;a=0;s=0"]);
+      assert.equal(
+        getEventListeners(controller.signal, "abort").length,
+        0,
+        "the relay must not survive the cancellation it delivered",
+      );
+    });
+  });
+}
+
+test("a cancellation mid-SSE-stream cuts an open body and leaves no listener", async () => {
+  await withEnv(scrubbed, async () => {
+    const seen = newSeen();
+    const sdk = clientWithFetch(
+      delayedBodyFetch(seen, {
+        chunks: [
+          'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ],
+      }),
+    );
+    const controller = new AbortController();
+    const reason = new Error("caller stopped mid-stream");
+    const response = await sdk.rawRequest("POST", "/chat/completions", {
+      headers: { accept: "text/event-stream" },
+      body: { model: "auto", messages: [{ role: "user", content: "hi" }], stream: true },
+      signal: controller.signal,
+      timeout: 5_000,
+    });
+    // The stream is open and unread: the relay is the only thing that can
+    // still cut it, so it must still be attached.
+    assert.equal(getEventListeners(controller.signal, "abort").length, 1);
+    const chunks = [];
+    let thrown = null;
+    setTimeout(() => controller.abort(reason), 20);
+    try {
+      for await (const chunk of iterSseChunks(response)) chunks.push(chunk);
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal(thrown, reason, "the open stream must raise the caller's reason");
+    assert.equal(chunks.length, 1, "only the pre-abort chunk is surfaced");
+    assert.equal(seen.bodiesCut, 1);
+    assert.equal(seen.bodiesDelivered, 0);
+    assert.deepEqual(seen.headers, ["v=1;a=0;s=1"]);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  });
+});
+
+test("the abort relay lives exactly as long as the response body", async () => {
+  await withEnv(scrubbed, async () => {
+    const seen = newSeen();
+    const sdk = clientWithFetch(delayedBodyFetch(seen, { delayMs: 10 }));
+    const controller = new AbortController(); // never aborted
+    const response = await sdk.rawRequest("POST", "/embeddings", {
+      body: { model: "m", input: "x" },
+      signal: controller.signal,
+      timeout: 5_000,
+    });
+    assert.equal(
+      getEventListeners(controller.signal, "abort").length,
+      1,
+      "still attached while the body is unread",
+    );
+    assert.equal(await response.text(), '{"ok":true}');
+    assert.equal(seen.bodiesDelivered, 1);
+    assert.equal(
+      getEventListeners(controller.signal, "abort").length,
+      0,
+      "released once the body settled",
+    );
+  });
+});
+
+test("retried attempts leave no abort listener on a signal that outlives them", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    const controller = new AbortController(); // never aborted
+    let call = 0;
+    const sdk = clientWithFetch(async (url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      call += 1;
+      if (call === 1) return new Response("{}", { status: 503 });
+      if (call === 2) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+        });
+      }
+      return okJson();
+    });
+    assert.deepEqual(
+      await sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        signal: controller.signal,
+        timeout: 5_000,
+      }),
+      { ok: true },
+    );
+    assert.equal(headers.length, 3);
+    assert.equal(
+      getEventListeners(controller.signal, "abort").length,
+      0,
+      "one listener per attempt would be an unbounded leak on a shared signal",
+    );
+  });
+});
+
+test("the SDK timeout still fires when the caller also passed a live signal", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    const controller = new AbortController(); // never aborted
+    const sdk = clientWithFetch((url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      return new Promise((resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal.reason), {
+          once: true,
+        });
+      });
+    });
+    let thrown = null;
+    await assert.rejects(
+      sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        signal: controller.signal,
+        timeout: 30,
+      }),
+      (error) => {
+        thrown = error;
+        return true;
+      },
+    );
+    // The SDK's own deadline, not the caller's cancellation: an AbortError,
+    // and the caller's signal is untouched.
+    assert.equal(thrown.name, "AbortError");
+    assert.equal(controller.signal.aborted, false);
+    assert.deepEqual(headers, ["v=1;a=0;s=0"]);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  });
+});
+
+test("a timeout-class failure alongside a live caller signal still records po=timeout", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    const controller = new AbortController(); // never aborted
+    let call = 0;
+    const sdk = clientWithFetch(async (url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      call += 1;
+      if (call === 1) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("Connect Timeout Error"), {
+            code: "UND_ERR_CONNECT_TIMEOUT",
+          }),
+        });
+      }
+      return okJson();
+    });
+    assert.deepEqual(
+      await sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        signal: controller.signal,
+        timeout: 5_000,
+      }),
+      { ok: true },
+    );
+    // Walking the cause chain for cancellation must not swallow a host
+    // timeout: it is still recorded, still retried, still classed a timeout.
+    assert.match(
+      headers[1],
+      /^v=1;a=1;po=timeout;pc=connect_timeout;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+    );
+  });
+});
+
+// A transport is entitled to rethrow the abort wrapped — `TypeError: fetch
+// failed` with the real failure as `cause` is the shape Node's own fetch uses
+// for everything. Testing only the top-level rejection let a WRAPPED
+// cancellation be retried and written to the wire as a host failure, which
+// corrupts the exact reliability signal this channel collects.
+for (const [label, wrap] of [
+  ["one level", (reason) => new TypeError("wrapped", { cause: reason })],
+  [
+    "two levels",
+    (reason) =>
+      new TypeError("fetch failed", { cause: new Error("relayed", { cause: reason }) }),
+  ],
+]) {
+  for (const [timeoutLabel, perCall] of [
+    ["", {}],
+    [" alongside the SDK timeout option", { timeout: 5_000 }],
+  ]) {
+    test(`a caller cancellation wrapped ${label}${timeoutLabel} is never retried or blamed on a host`, async () => {
+      await withEnv(scrubbed, async () => {
+        const headers = [];
+        const controller = new AbortController();
+        const reason = new Error("caller stopped");
+        let calls = 0;
+        const sdk = clientWithFetch(async (url, init) => {
+          headers.push(init.headers.get("x-tr-client"));
+          calls += 1;
+          controller.abort(reason);
+          throw wrap(init.signal.reason);
+        });
+        let thrown = null;
+        await assert.rejects(
+          sdk.request("POST", "/embeddings", {
+            body: { model: "m", input: "x" },
+            signal: controller.signal,
+            ...perCall,
+          }),
+          (error) => {
+            thrown = error;
+            return true;
+          },
+        );
+        assert.equal(calls, 1, "a dead signal must not be retried");
+        assert.deepEqual(
+          headers,
+          ["v=1;a=0;s=0"],
+          "no attempt may claim a TrustedRouter host failed",
+        );
+        assert.equal(thrown, reason, "the caller's reason, not an InternalError");
+      });
+    });
+  }
+}

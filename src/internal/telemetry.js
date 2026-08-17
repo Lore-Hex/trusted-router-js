@@ -157,7 +157,15 @@ export function resolveTelemetryEnabled(
   return hostEnum(baseUrl) !== "custom" && isControlHost(controlBaseUrl);
 }
 
-function errorChain(error) {
+/**
+ * The error and its `cause` ancestors, newest first — cycle-safe and bounded.
+ *
+ * Node's fetch reports the real failure as the `cause` of a generic
+ * `TypeError: fetch failed`, so every predicate that asks "what actually went
+ * wrong here" has to look past the top-level object. Shared with the engine's
+ * cancellation check (transport.js) so there is ONE chain walker in the SDK.
+ */
+export function errorChain(error) {
   const chain = [];
   const seen = new Set();
   let current = error;
