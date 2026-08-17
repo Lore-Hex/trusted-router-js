@@ -340,12 +340,25 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
   if (!timeoutMs) {
     return ctx.fetch(url, init);
   }
+  // BOTH deadlines have to survive. The timeout controller used to REPLACE
+  // init.signal, so passing `signal` and `timeout` together — a documented
+  // RequestOptions combination — silently dropped the caller's cancellation:
+  // the caller's abort was ignored and the request ran on until the SDK
+  // timeout (or succeeded outright). Relay the caller's abort into the
+  // timeout controller instead, forwarding its REASON verbatim so the
+  // rejection stays identity-equal to `callerSignal.reason` and the engine's
+  // cancellation check can still recognise it causally.
   const controller = new AbortController();
+  const callerSignal = init.signal ?? null;
+  const relayAbort = () => controller.abort(callerSignal.reason);
+  if (callerSignal?.aborted) relayAbort();
+  else callerSignal?.addEventListener("abort", relayAbort, { once: true });
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await ctx.fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(id);
+    callerSignal?.removeEventListener("abort", relayAbort);
   }
 }
 
@@ -382,10 +395,22 @@ export async function performRequest(ctx, method, path, init = {}) {
   } = init;
 
   const isInferenceRequest = _baseUrls === null;
-  // The caller's own cancellation signal, kept so the catch below can tell a
-  // client abort from a host failure by the SIGNAL's state rather than by the
-  // thrown error's name (see the cancellation note there).
+  // Is this rejection the caller cancelling, rather than a fact about the
+  // host? Decided CAUSALLY, not by the signal's state at catch time: the
+  // rejection must BE the caller's abort reason. `error.name` alone cannot
+  // tell — only a bare `controller.abort()` yields an AbortError, while
+  // `AbortSignal.timeout()` rejects with a TimeoutError and
+  // `controller.abort(reason)` with the caller's own object — but a mere
+  // `signal.aborted` test is too coarse in the other direction: a genuine host
+  // failure that races a late abort is still a true fact about the host, and
+  // reclassifying it would hide a real failure and skip the retry. Identity
+  // holds through fetchWithTimeout, which relays the reason verbatim.
   const callerSignal = rest.signal ?? null;
+  const isCallerCancellation = (error) =>
+    error?.name === "AbortError" ||
+    (callerSignal !== null &&
+      callerSignal.aborted === true &&
+      error === callerSignal.reason);
   // Telemetry header channel (contract v1): ONE recorder per logical call,
   // engine-owned, so this loop stays the single emit point. Control-plane
   // calls (pinned _baseUrls) and opted-out clients never construct one; a
@@ -442,16 +467,11 @@ export async function performRequest(ctx, method, path, init = {}) {
         timeout,
       );
     } catch (error) {
-      // A caller cancellation is terminal and is NOT a fact about the host.
-      // `error.name` cannot discriminate it: only a bare `controller.abort()`
-      // yields an AbortError, while `AbortSignal.timeout()` rejects with a
-      // TimeoutError and `controller.abort(reason)` rejects with the caller's
-      // own reason object — so the signal's state is the authority. Recording
-      // one would put a false po=/pc=/ph= claim about the host on the wire
-      // and burn a failover candidate on a retry the dead signal must fail.
-      if (error?.name === "AbortError" || callerSignal?.aborted === true) {
-        throw error;
-      }
+      // A caller cancellation is terminal and is NOT a fact about the host:
+      // recording one would put a false po=/pc=/ph= claim on the wire and burn
+      // a failover candidate on a retry the dead signal must fail. The
+      // caller's reason propagates unwrapped.
+      if (isCallerCancellation(error)) throw error;
       // Record with the live error object BEFORE transportError() flattens
       // the failure to a message string — after that only the string is left.
       recorder?.onTransportError(error);

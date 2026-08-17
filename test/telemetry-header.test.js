@@ -652,8 +652,26 @@ test("a retry after an ok response labelled x-should-retry never emits po=ok", a
 // exactly ONE attempt (no retry on a signal that is already dead, no failover
 // candidate burnt) and must emit NO second header claiming the host timed out
 // or failed. The caller's reason propagates unwrapped.
-for (const [label, makeSignal, expectedName] of [
-  ["AbortSignal.timeout", () => AbortSignal.timeout(50), "TimeoutError"],
+// A transport that genuinely waits on whatever signal it is handed: only that
+// signal can end this fetch, and it rejects with the signal's own reason.
+function signalBoundFetch(headers) {
+  return (url, init) => {
+    headers.push(init.headers.get("x-tr-client"));
+    return new Promise((resolve, reject) => {
+      const signal = init.signal;
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal?.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  };
+}
+
+for (const [label, makeSignal, expectedName, perCall] of [
+  ["AbortSignal.timeout", () => AbortSignal.timeout(50), "TimeoutError", {}],
   [
     "controller.abort(reason)",
     () => {
@@ -662,6 +680,7 @@ for (const [label, makeSignal, expectedName] of [
       return controller.signal;
     },
     "Error",
+    {},
   ],
   [
     "bare controller.abort()",
@@ -671,47 +690,123 @@ for (const [label, makeSignal, expectedName] of [
       return controller.signal;
     },
     "AbortError",
+    {},
+  ],
+  // `signal` + `timeout` together is a documented RequestOptions combination.
+  // fetchWithTimeout must not let its own controller swallow the caller's
+  // signal: the caller's abort has to win, with its reason intact.
+  [
+    "controller.abort(reason) alongside the SDK timeout option",
+    () => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new Error("caller stopped")), 20);
+      return controller.signal;
+    },
+    "Error",
+    { timeout: 5_000 },
+  ],
+  [
+    "AbortSignal.timeout alongside the SDK timeout option",
+    () => AbortSignal.timeout(20),
+    "TimeoutError",
+    { timeout: 5_000 },
+  ],
+  [
+    "a signal already aborted before the call, with the SDK timeout option",
+    () => AbortSignal.abort(new Error("caller stopped")),
+    "Error",
+    { timeout: 5_000 },
   ],
 ]) {
   test(`a caller cancellation via ${label} is terminal and never a host fact`, async () => {
     await withEnv(scrubbed, async () => {
       const headers = [];
-      const sdk = clientWithFetch(
-        (url, init) => {
-          headers.push(init.headers.get("x-tr-client"));
-          // A transport that genuinely waits on the caller's signal: only the
-          // signal can end this fetch.
-          return new Promise((resolve, reject) => {
-            const signal = init.signal;
-            if (signal?.aborted) {
-              reject(signal.reason);
-              return;
-            }
-            signal?.addEventListener("abort", () => reject(signal.reason), {
-              once: true,
-            });
-          });
-        },
-        { maxRetries: 3 },
-      );
+      const sdk = clientWithFetch(signalBoundFetch(headers), { maxRetries: 3 });
+      const signal = makeSignal();
       // AbortSignal.timeout's internal timer is unref'd, and the fake
       // transport pends solely on it — keep the event loop alive ourselves.
       const keepAlive = setTimeout(() => {}, 10_000);
+      let thrown;
       try {
         await assert.rejects(
           sdk.request("POST", "/embeddings", {
             body: { model: "m", input: "x" },
-            signal: makeSignal(),
+            signal,
+            ...perCall,
           }),
-          (error) => error.name === expectedName,
+          (error) => {
+            thrown = error;
+            return error.name === expectedName;
+          },
         );
       } finally {
         clearTimeout(keepAlive);
       }
+      // Identity, not just the name: the caller's own reason object reaches
+      // the caller, never a substituted AbortError or a wrapped InternalError.
+      assert.equal(thrown, signal.reason);
+      // Exactly one attempt, and no header blaming a host for the client's
+      // own cancellation.
       assert.deepEqual(headers, ["v=1;a=0;s=0"]);
     });
   });
 }
+
+test("a genuine transport failure racing a late abort is still recorded as a host fact", async () => {
+  await withEnv(scrubbed, async () => {
+    // The cancellation check must be CAUSAL. A `signal.aborted` test alone is
+    // too coarse: here a real ECONNRESET rejects and the caller aborts in the
+    // same tick, so a state-based check would reclassify a true host failure
+    // as a cancellation — hiding it from the telemetry and skipping the retry.
+    const headers = [];
+    const controller = new AbortController();
+    const reason = new Error("caller stopped");
+    const networkError = new TypeError("fetch failed", {
+      cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+    });
+    let call = 0;
+    const sdk = clientWithFetch((url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      call += 1;
+      if (call === 1) {
+        // One tick: the host's reset lands and the caller aborts together.
+        return new Promise((resolve, reject) => {
+          setTimeout(() => {
+            reject(networkError);
+            controller.abort(reason);
+          }, 5);
+        });
+      }
+      return new Promise((resolve, reject) => {
+        const signal = init.signal;
+        if (signal?.aborted) reject(signal.reason);
+        else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    let thrown;
+    await assert.rejects(
+      sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        signal: controller.signal,
+      }),
+      (error) => {
+        thrown = error;
+        return true;
+      },
+    );
+    // The reset was recorded and retried: the second attempt reports the host's
+    // failure truthfully rather than the request vanishing as a cancellation.
+    assert.equal(headers.length, 2);
+    assert.equal(headers[0], "v=1;a=0;s=0");
+    assert.match(
+      headers[1],
+      /^v=1;a=1;po=transport_error;pc=reset;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+    );
+    // The retry then fails from the now-aborted signal, so the caller still
+    // gets their own reason.
+    assert.equal(thrown, reason);
+  });
+});
 
 test("the SDK timeout option aborts terminally: no retry, no second header", async () => {
   await withEnv(scrubbed, async () => {
