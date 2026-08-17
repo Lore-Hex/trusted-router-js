@@ -343,39 +343,38 @@ const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"
 /**
  * Re-expose `response.body` as a stream that reports when it settles.
  *
- * Taking a reader LOCKS the source, so this is only ever called from the lazy
- * `body` getter installed below — locking before the consumer has chosen
- * buffered-vs-streaming would break every reader in BODY_READERS.
+ * The source is locked on the first READ, never on construction: on a plain
+ * Response, reading `.body` does not disturb or lock anything, so
+ * `response.body` followed by `response.text()` is legal and must stay legal.
+ * Locking eagerly would have broken that, and every reader in BODY_READERS
+ * with it.
  */
 function watchedBody(stream, onSettled) {
-  try {
-    const reader = stream.getReader();
-    return new ReadableStream({
-      async pull(controller) {
-        try {
-          const { done, value } = await reader.read();
-          if (done) {
-            onSettled();
-            controller.close();
-            return;
-          }
-          controller.enqueue(value);
-        } catch (error) {
-          // Includes the caller's abort reason arriving mid-stream, which is
-          // the whole point of keeping the relay alive this long.
+  let reader = null;
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        if (reader === null) reader = stream.getReader();
+        const { done, value } = await reader.read();
+        if (done) {
           onSettled();
-          controller.error(error);
+          controller.close();
+          return;
         }
-      },
-      cancel(reason) {
+        controller.enqueue(value);
+      } catch (error) {
+        // Includes the caller's abort reason arriving mid-stream, which is
+        // the whole point of keeping the relay alive this long. Also covers a
+        // source already consumed through one of the buffered readers.
         onSettled();
-        return reader.cancel(reason);
-      },
-    });
-  } catch {
-    onSettled();
-    return stream;
-  }
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      onSettled();
+      return reader === null ? stream.cancel(reason) : reader.cancel(reason);
+    },
+  });
 }
 
 /**
@@ -430,7 +429,16 @@ function releaseWhenBodySettles(response, onSettled) {
     Object.defineProperty(response, "body", {
       configurable: true,
       get() {
-        if (watched === null) watched = watchedBody(stream, onSettled);
+        // Runs on the caller's stack, outside the try below, so it carries its
+        // own: reading `response.body` must never start throwing.
+        if (watched === null) {
+          try {
+            watched = watchedBody(stream, onSettled);
+          } catch {
+            onSettled();
+            watched = stream;
+          }
+        }
         return watched;
       },
     });

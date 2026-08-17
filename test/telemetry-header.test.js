@@ -1058,6 +1058,29 @@ test("the abort relay lives exactly as long as the response body", async () => {
   });
 });
 
+test("instrumenting the body leaves the Response behaving like a Response", async () => {
+  await withEnv(scrubbed, async () => {
+    const sdk = clientWithFetch(async () => okJson());
+    const controller = new AbortController(); // never aborted
+    const response = await sdk.rawRequest("POST", "/embeddings", {
+      body: { model: "m", input: "x" },
+      signal: controller.signal,
+      timeout: 5_000,
+    });
+    assert.ok(response instanceof Response);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/json");
+    // Reading `.body` neither disturbs nor locks a real Response, so a
+    // buffered read after it must still work.
+    assert.ok(response.body);
+    assert.equal(response.bodyUsed, false);
+    assert.deepEqual(JSON.parse(await response.text()), { ok: true });
+    assert.equal(response.bodyUsed, true);
+    await assert.rejects(response.text(), TypeError);
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  });
+});
+
 test("retried attempts leave no abort listener on a signal that outlives them", async () => {
   await withEnv(scrubbed, async () => {
     const headers = [];
