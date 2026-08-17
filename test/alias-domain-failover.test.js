@@ -85,14 +85,24 @@ test("a 500 does NOT move to another domain", async () => {
   // per Idempotency-Key, settlement is exactly-once) but the work would run
   // again, costing TrustedRouter a second upstream generation.
   const seen = [];
-  const sdk = clientWithFetch(async (url) => {
-    seen.push(new URL(url).host);
+  const sdk = clientWithFetch(async (url, init) => {
+    seen.push({ host: new URL(url).host, header: init.headers.get("x-tr-client") });
     return new Response(JSON.stringify({ error: "boom" }), {
       status: 500,
       headers: { "content-type": "application/json" },
     });
-  });
+  }, { telemetry: true });
 
   await assert.rejects(() => sdk.request("GET", "/models"));
-  assert.deepEqual([...new Set(seen)], ["api.trustedrouter.com"], `leaked: ${seen}`);
+  const hosts = seen.map(({ host }) => host);
+  assert.deepEqual([...new Set(hosts)], ["api.trustedrouter.com"], `leaked: ${hosts}`);
+  // Every in-place retry says so on the wire: previous attempt http_error
+  // on the apex, candidate index never advanced (fo=0).
+  assert.equal(seen[0].header, "v=1;a=0;s=0");
+  seen.slice(1).forEach(({ header }, index) => {
+    assert.match(
+      header,
+      new RegExp(`^v=1;a=${index + 1};po=http_error;pc=none;ph=apex;pm=\\d{1,7};sm=\\d{1,7};s=0;fo=0$`),
+    );
+  });
 });

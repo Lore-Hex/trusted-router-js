@@ -290,18 +290,24 @@ test("non-JSON 5xx body still produces a typed InternalError", async () => {
 
 test("request retries on 429 then succeeds", async () => {
   let calls = 0;
+  const clientHeaders = [];
   const c = new TrustedRouter({
     apiKey: "k",
-    fetchImpl: async () => {
+    fetchImpl: async (url, init) => {
       calls++;
+      clientHeaders.push(init.headers.get("x-tr-client"));
       if (calls < 3) return jsonResponse(429, { error: { message: "x" } }, { "retry-after": "0" });
       return jsonResponse(200, { data: ["ok"] });
     },
     maxRetries: 3,
+    telemetry: true,
   });
   const out = await c.models();
   assert.deepEqual(out, { data: ["ok"] });
   assert.equal(calls, 3);
+  // models() is a control-plane call: the telemetry header stays off the
+  // wire on the first attempt AND on every retry, even with telemetry on.
+  assert.deepEqual(clientHeaders, [null, null, null]);
 });
 
 test("request retries on 503 then gives up", async () => {

@@ -445,6 +445,41 @@ test("transport errors classify from real undici shapes before flattening", () =
     classifyTransportError(fetchFailed({ code: "UND_ERR_BODY_TIMEOUT" })),
     "read_timeout",
   );
+  // A system ETIMEDOUT splits on syscall: read/write map to the matching
+  // timeout class, anything else is the connect phase.
+  assert.equal(
+    classifyTransportError(fetchFailed({ code: "ETIMEDOUT", syscall: "read" })),
+    "read_timeout",
+  );
+  assert.equal(
+    classifyTransportError(fetchFailed({ code: "ETIMEDOUT", syscall: "write" })),
+    "write_timeout",
+  );
+  assert.equal(
+    classifyTransportError(fetchFailed({ code: "ETIMEDOUT", syscall: "connect" })),
+    "connect_timeout",
+  );
+  assert.equal(
+    classifyTransportError(fetchFailed({ code: "UND_ERR_PRX_TLS" })),
+    "proxy_error",
+  );
+  assert.equal(
+    classifyTransportError(fetchFailed({ name: "SecureProxyConnectionError" })),
+    "proxy_error",
+  );
+  // A proxy TLS failure wrapping a certificate error classifies as tls —
+  // the same priority the Python classifier gives ssl over proxy.
+  assert.equal(
+    classifyTransportError(
+      new TypeError("fetch failed", {
+        cause: Object.assign(new Error("proxy"), {
+          code: "UND_ERR_PRX_TLS",
+          cause: Object.assign(new Error("cert"), { code: "CERT_HAS_EXPIRED" }),
+        }),
+      }),
+    ),
+    "tls",
+  );
   assert.equal(classifyTransportError(fetchFailed({ code: "ECONNRESET" })), "reset");
   assert.equal(classifyTransportError(fetchFailed({ code: "UND_ERR_SOCKET" })), "reset");
   assert.equal(classifyTransportError(fetchFailed({ code: "EHOSTUNREACH" })), "connect_error");
@@ -508,7 +543,177 @@ test("headerValue never throws on corrupted recorder state", () => {
   recorder.onResponse(503);
   recorder.onMoved();
   recorder.beginAttempt("https://api.allyrouter.com/v1");
-  // Simulate vocabulary drift: an outcome that escapes the value grammar.
-  recorder.attempts[0].outcome = "HTTP-503!";
+  // Simulate host-vocabulary drift: a value that escapes the grammar drops
+  // the whole header rather than sending it malformed.
+  recorder.attempts[0].host = "Bad Host!";
   assert.equal(recorder.headerValue(), null);
+});
+
+test("headerValue maps a previous outcome outside the po vocabulary to none", () => {
+  // §3.2's po vocabulary has no `ok` (or anything else beyond the five
+  // listed values); po=ok would make the enclave drop the whole header.
+  const recorder = new RequestRecorder({ streaming: false, now: () => 0 });
+  recorder.beginAttempt("https://api.trustedrouter.com/v1");
+  recorder.onResponse(200);
+  recorder.beginAttempt("https://api.trustedrouter.com/v1");
+  assert.equal(recorder.headerValue(), "v=1;a=1;po=none;pc=none;ph=apex;pm=0;sm=0;s=0;fo=0");
+  // Arbitrary outcome drift maps the same way — and forces pc=none too.
+  recorder.attempts[0].outcome = "HTTP-503!";
+  recorder.attempts[0].errorClass = "connect_timeout";
+  assert.equal(recorder.headerValue(), "v=1;a=1;po=none;pc=none;ph=apex;pm=0;sm=0;s=0;fo=0");
+});
+
+test("a retry after an ok response labelled x-should-retry never emits po=ok", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    let call = 0;
+    const sdk = clientWithFetch(async (url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      call += 1;
+      if (call === 1) {
+        return new Response("{}", {
+          status: 200,
+          headers: { "x-should-retry": "true" },
+        });
+      }
+      return okJson();
+    });
+    assert.deepEqual(await sdk.request("GET", "/models"), { ok: true });
+    assert.equal(headers[0], "v=1;a=0;s=0");
+    assert.match(
+      headers[1],
+      /^v=1;a=1;po=none;pc=none;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=0$/,
+    );
+  });
+});
+
+test("a real AbortSignal.timeout firing mid-fetch records po=timeout", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    const sdk = clientWithFetch(
+      (url, init) => {
+        headers.push(init.headers.get("x-tr-client"));
+        // A transport that genuinely waits on the caller's signal: only the
+        // signal can end this fetch.
+        return new Promise((resolve, reject) => {
+          const signal = init.signal;
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+      { maxRetries: 1 },
+    );
+    // AbortSignal.timeout's internal timer is unref'd, and the fake
+    // transport pends solely on it — keep the event loop alive ourselves.
+    const keepAlive = setTimeout(() => {}, 10_000);
+    try {
+      await assert.rejects(
+        sdk.request("POST", "/embeddings", {
+          body: { model: "m", input: "x" },
+          signal: AbortSignal.timeout(50),
+        }),
+        (error) => error.name === "InternalError",
+      );
+    } finally {
+      clearTimeout(keepAlive);
+    }
+    assert.equal(headers.length, 2);
+    assert.equal(headers[0], "v=1;a=0;s=0");
+    assert.match(
+      headers[1],
+      /^v=1;a=1;po=timeout;pc=unknown;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+    );
+  });
+});
+
+test("the SDK timeout option aborts terminally: no retry, no second header", async () => {
+  await withEnv(scrubbed, async () => {
+    const headers = [];
+    const sdk = clientWithFetch((url, init) => {
+      headers.push(init.headers.get("x-tr-client"));
+      return new Promise((resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal.reason), {
+          once: true,
+        });
+      });
+    });
+    await assert.rejects(
+      sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        timeout: 50,
+      }),
+      (error) => error.name === "AbortError",
+    );
+    assert.deepEqual(headers, ["v=1;a=0;s=0"]);
+  });
+});
+
+test("each retry header describes exactly the immediately preceding attempt", async () => {
+  await withEnv(scrubbed, async () => {
+    const seen = [];
+    let call = 0;
+    const sdk = clientWithFetch(async (url, init) => {
+      seen.push({ host: new URL(url).host, header: init.headers.get("x-tr-client") });
+      call += 1;
+      if (call === 1) return new Response("{}", { status: 503 });
+      if (call === 2) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+        });
+      }
+      return okJson();
+    });
+    assert.deepEqual(await sdk.request("GET", "/models"), { ok: true });
+    assert.deepEqual(
+      seen.map(({ host }) => host),
+      ["api.trustedrouter.com", "api.allyrouter.com", "api.uptimerouter.com"],
+    );
+    assert.equal(seen[0].header, "v=1;a=0;s=0");
+    assert.match(
+      seen[1].header,
+      /^v=1;a=1;po=http_error;pc=none;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+    );
+    assert.match(
+      seen[2].header,
+      /^v=1;a=2;po=transport_error;pc=reset;ph=ally;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+    );
+  });
+});
+
+test("concurrent logical calls keep independent recorder histories", async () => {
+  await withEnv(scrubbed, async () => {
+    const perKey = new Map();
+    const sdk = clientWithFetch(async (url, init) => {
+      const key = init.headers.get("idempotency-key");
+      const entry = perKey.get(key) ?? { calls: 0, headers: [] };
+      perKey.set(key, entry);
+      entry.calls += 1;
+      entry.headers.push(init.headers.get("x-tr-client"));
+      if (entry.calls === 1) {
+        // Interleave the two logical calls' attempts.
+        await new Promise((resolve) => setTimeout(resolve, 5 * perKey.size));
+        return new Response("{}", { status: 503 });
+      }
+      return okJson();
+    });
+    const [first, second] = await Promise.all([
+      sdk.request("POST", "/embeddings", { body: { model: "m", input: "a" } }),
+      sdk.request("POST", "/embeddings", { body: { model: "m", input: "b" } }),
+    ]);
+    assert.deepEqual(first, { ok: true });
+    assert.deepEqual(second, { ok: true });
+    assert.equal(perKey.size, 2);
+    for (const { headers } of perKey.values()) {
+      assert.equal(headers[0], "v=1;a=0;s=0");
+      assert.match(
+        headers[1],
+        /^v=1;a=1;po=http_error;pc=none;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+      );
+    }
+  });
 });

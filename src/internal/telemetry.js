@@ -86,6 +86,17 @@ const TIMEOUT_ERROR_CLASSES = new Set([
   "write_timeout",
   "pool_timeout",
 ]);
+// §3.2's po vocabulary is none|http_error|transport_error|timeout|
+// stream_broken — NOT the full Outcome enum. A retry can follow an `ok`
+// attempt (a sub-400 response labelled x-should-retry: true), and po=ok
+// would make the enclave drop the whole header; anything outside the po
+// vocabulary serializes as po=none with pc=none.
+const HEADER_PREVIOUS_OUTCOMES = new Set([
+  "http_error",
+  "transport_error",
+  "timeout",
+  "stream_broken",
+]);
 
 function schemeHost(url) {
   try {
@@ -179,25 +190,37 @@ const TLS_CODES = new Set([
 
 // Highest-priority class wins across the whole `cause` chain, in the same
 // order as the Python classifier: timeouts, then TLS/DNS/socket phases, then
-// protocol and IO, then unknown. Node's fetch wraps the real failure as the
-// `cause` of `TypeError: fetch failed` (verified against Node 20 undici for
-// ENOTFOUND, ECONNREFUSED, ECONNRESET, DEPTH_ZERO_SELF_SIGNED_CERT,
-// ERR_SSL_WRONG_VERSION_NUMBER, HPE_*, and UND_ERR_CONNECT_TIMEOUT).
+// protocol, IO, and proxy, then unknown. Node's fetch wraps the real failure
+// as the `cause` of `TypeError: fetch failed` (verified against Node 20
+// undici for ENOTFOUND, ECONNREFUSED, ECONNRESET,
+// DEPTH_ZERO_SELF_SIGNED_CERT, ERR_SSL_WRONG_VERSION_NUMBER, HPE_*, and
+// UND_ERR_CONNECT_TIMEOUT). A system ETIMEDOUT is split on `syscall`:
+// read/write map to the matching timeout class, anything else is the
+// connect phase. `pool_timeout` stays vocabulary-only here — no supported
+// JS transport emits a distinguishable pool-acquire timeout — and a bare
+// `TypeError: fetch failed` with no identifiable cause is `unknown` by
+// design rather than a guess.
 const ERROR_CLASSIFIERS = [
   [
     "connect_timeout",
-    (code, name) =>
+    (code, name, _message, syscall) =>
       code === "UND_ERR_CONNECT_TIMEOUT" ||
       name === "ConnectTimeoutError" ||
-      code === "ETIMEDOUT",
+      (code === "ETIMEDOUT" && syscall !== "read" && syscall !== "write"),
   ],
   [
     "read_timeout",
-    (code, name) =>
+    (code, name, _message, syscall) =>
       code === "UND_ERR_HEADERS_TIMEOUT" ||
       code === "UND_ERR_BODY_TIMEOUT" ||
       name === "HeadersTimeoutError" ||
-      name === "BodyTimeoutError",
+      name === "BodyTimeoutError" ||
+      (code === "ETIMEDOUT" && syscall === "read"),
+  ],
+  [
+    "write_timeout",
+    (code, _name, _message, syscall) =>
+      code === "ETIMEDOUT" && syscall === "write",
   ],
   [
     "tls",
@@ -232,6 +255,11 @@ const ERROR_CLASSIFIERS = [
       code === "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
   ],
   ["io_error", (code) => code === "EPIPE" || code === "ERR_STREAM_PREMATURE_CLOSE"],
+  [
+    "proxy_error",
+    (code, name) =>
+      code === "UND_ERR_PRX_TLS" || name === "SecureProxyConnectionError",
+  ],
 ];
 
 /** Classify a transport error into the closed ErrorClass vocabulary. */
@@ -243,7 +271,8 @@ export function classifyTransportError(error) {
         const code = typeof item?.code === "string" ? item.code : "";
         const name = typeof item?.name === "string" ? item.name : "";
         const message = typeof item?.message === "string" ? item.message : "";
-        if (matches(code, name, message)) return errorClass;
+        const syscall = typeof item?.syscall === "string" ? item.syscall : "";
+        if (matches(code, name, message, syscall)) return errorClass;
       }
     }
   } catch {
@@ -380,9 +409,14 @@ export class RequestRecorder {
           firstStarted,
           this._attemptStarted ?? this._now(),
         );
+        const previousOutcome = HEADER_PREVIOUS_OUTCOMES.has(previous.outcome)
+          ? previous.outcome
+          : "none";
+        const previousClass =
+          previousOutcome === "none" ? "none" : previous.errorClass ?? "none";
         values.push(
-          `po=${previous.outcome}`,
-          `pc=${previous.errorClass ?? "none"}`,
+          `po=${previousOutcome}`,
+          `pc=${previousClass}`,
           `ph=${previous.host}`,
           `pm=${previous.elapsedMs}`,
           `sm=${sinceFirstMs}`,
