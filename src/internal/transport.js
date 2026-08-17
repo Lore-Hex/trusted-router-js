@@ -382,6 +382,10 @@ export async function performRequest(ctx, method, path, init = {}) {
   } = init;
 
   const isInferenceRequest = _baseUrls === null;
+  // The caller's own cancellation signal, kept so the catch below can tell a
+  // client abort from a host failure by the SIGNAL's state rather than by the
+  // thrown error's name (see the cancellation note there).
+  const callerSignal = rest.signal ?? null;
   // Telemetry header channel (contract v1): ONE recorder per logical call,
   // engine-owned, so this loop stays the single emit point. Control-plane
   // calls (pinned _baseUrls) and opted-out clients never construct one; a
@@ -438,7 +442,16 @@ export async function performRequest(ctx, method, path, init = {}) {
         timeout,
       );
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      // A caller cancellation is terminal and is NOT a fact about the host.
+      // `error.name` cannot discriminate it: only a bare `controller.abort()`
+      // yields an AbortError, while `AbortSignal.timeout()` rejects with a
+      // TimeoutError and `controller.abort(reason)` rejects with the caller's
+      // own reason object — so the signal's state is the authority. Recording
+      // one would put a false po=/pc=/ph= claim about the host on the wire
+      // and burn a failover candidate on a retry the dead signal must fail.
+      if (error?.name === "AbortError" || callerSignal?.aborted === true) {
+        throw error;
+      }
       // Record with the live error object BEFORE transportError() flattens
       // the failure to a message string — after that only the string is left.
       recorder?.onTransportError(error);

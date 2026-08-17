@@ -304,6 +304,29 @@ test("an attempt index past 99 sends no header at all", () => {
   assert.equal(recorder.headerValue(), null);
 });
 
+test("the recorder's stored history stays bounded while the index keeps rising", () => {
+  // maxRetries is caller-configured, so an unbounded per-attempt store would
+  // turn the engine's O(1) memory into O(maxRetries). Only the newest attempt
+  // is ever serialised, and past a=99 the header is suppressed outright, so
+  // the store must stop growing while the attempt index still advances.
+  const recorder = new RequestRecorder({ streaming: false, now: () => 0 });
+  const error = Object.assign(new Error("boom"), { code: "ECONNRESET" });
+  for (let i = 0; i < 5_000; i += 1) {
+    recorder.beginAttempt("https://api.trustedrouter.com/v1");
+    recorder.onTransportError(error);
+  }
+  assert.ok(
+    recorder.attempts.length <= 101,
+    `store grew to ${recorder.attempts.length}`,
+  );
+  assert.equal(recorder._attemptCount, 5_000);
+  // The index never rewound, so the header stays suppressed rather than
+  // wrapping back into the 0..99 range and emitting a bogus a=.
+  recorder.beginAttempt("https://api.trustedrouter.com/v1");
+  assert.equal(recorder._currentIndex, 5_000);
+  assert.equal(recorder.headerValue(), null);
+});
+
 test("a custom base URL never carries x-tr-client, even when telemetry is forced on", async () => {
   const captured = [];
   const sdk = new TrustedRouter({
@@ -481,7 +504,42 @@ test("transport errors classify from real undici shapes before flattening", () =
     "tls",
   );
   assert.equal(classifyTransportError(fetchFailed({ code: "ECONNRESET" })), "reset");
-  assert.equal(classifyTransportError(fetchFailed({ code: "UND_ERR_SOCKET" })), "reset");
+  // UND_ERR_SOCKET covers several unrelated phases, distinguished only by
+  // undici's message. The full message set in Node 20.20.2's embedded undici
+  // is "bad response" / "bad upgrade" / "bad connect" / "other side closed" /
+  // "closed"; mapping the whole code to `reset` serialises a false fact for
+  // the first three.
+  for (const [message, expected] of [
+    ["other side closed", "reset"],
+    ["closed", "reset"],
+    ["", "reset"],
+    ["bad response", "protocol_error"],
+    ["bad upgrade", "protocol_error"],
+    ["bad connect", "connect_error"],
+  ]) {
+    assert.equal(
+      classifyTransportError(
+        new TypeError("fetch failed", {
+          cause: Object.assign(new Error(message), {
+            code: "UND_ERR_SOCKET",
+            name: "SocketError",
+          }),
+        }),
+      ),
+      expected,
+      `UND_ERR_SOCKET "${message}"`,
+    );
+  }
+  // Node 20's undici defines HeadersOverflowError/UND_ERR_HEADERS_OVERFLOW —
+  // a protocol failure, not an unknown one.
+  assert.equal(
+    classifyTransportError(fetchFailed({ code: "UND_ERR_HEADERS_OVERFLOW" })),
+    "protocol_error",
+  );
+  assert.equal(
+    classifyTransportError(fetchFailed({ name: "HeadersOverflowError" })),
+    "protocol_error",
+  );
   assert.equal(classifyTransportError(fetchFailed({ code: "EHOSTUNREACH" })), "connect_error");
   assert.equal(
     classifyTransportError(fetchFailed({ code: "HPE_INVALID_CONSTANT" })),
@@ -587,49 +645,73 @@ test("a retry after an ok response labelled x-should-retry never emits po=ok", a
   });
 });
 
-test("a real AbortSignal.timeout firing mid-fetch records po=timeout", async () => {
-  await withEnv(scrubbed, async () => {
-    const headers = [];
-    const sdk = clientWithFetch(
-      (url, init) => {
-        headers.push(init.headers.get("x-tr-client"));
-        // A transport that genuinely waits on the caller's signal: only the
-        // signal can end this fetch.
-        return new Promise((resolve, reject) => {
-          const signal = init.signal;
-          if (signal?.aborted) {
-            reject(signal.reason);
-            return;
-          }
-          signal?.addEventListener("abort", () => reject(signal.reason), {
-            once: true,
+// A caller cancellation is terminal and is NOT a host fact. Only a bare
+// `controller.abort()` produces an AbortError: `AbortSignal.timeout()` rejects
+// with a TimeoutError and `controller.abort(reason)` with the caller's own
+// object, so the engine must key off the SIGNAL's state. Each case must make
+// exactly ONE attempt (no retry on a signal that is already dead, no failover
+// candidate burnt) and must emit NO second header claiming the host timed out
+// or failed. The caller's reason propagates unwrapped.
+for (const [label, makeSignal, expectedName] of [
+  ["AbortSignal.timeout", () => AbortSignal.timeout(50), "TimeoutError"],
+  [
+    "controller.abort(reason)",
+    () => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new Error("caller stopped")), 50);
+      return controller.signal;
+    },
+    "Error",
+  ],
+  [
+    "bare controller.abort()",
+    () => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), 50);
+      return controller.signal;
+    },
+    "AbortError",
+  ],
+]) {
+  test(`a caller cancellation via ${label} is terminal and never a host fact`, async () => {
+    await withEnv(scrubbed, async () => {
+      const headers = [];
+      const sdk = clientWithFetch(
+        (url, init) => {
+          headers.push(init.headers.get("x-tr-client"));
+          // A transport that genuinely waits on the caller's signal: only the
+          // signal can end this fetch.
+          return new Promise((resolve, reject) => {
+            const signal = init.signal;
+            if (signal?.aborted) {
+              reject(signal.reason);
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
           });
-        });
-      },
-      { maxRetries: 1 },
-    );
-    // AbortSignal.timeout's internal timer is unref'd, and the fake
-    // transport pends solely on it — keep the event loop alive ourselves.
-    const keepAlive = setTimeout(() => {}, 10_000);
-    try {
-      await assert.rejects(
-        sdk.request("POST", "/embeddings", {
-          body: { model: "m", input: "x" },
-          signal: AbortSignal.timeout(50),
-        }),
-        (error) => error.name === "InternalError",
+        },
+        { maxRetries: 3 },
       );
-    } finally {
-      clearTimeout(keepAlive);
-    }
-    assert.equal(headers.length, 2);
-    assert.equal(headers[0], "v=1;a=0;s=0");
-    assert.match(
-      headers[1],
-      /^v=1;a=1;po=timeout;pc=unknown;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
-    );
+      // AbortSignal.timeout's internal timer is unref'd, and the fake
+      // transport pends solely on it — keep the event loop alive ourselves.
+      const keepAlive = setTimeout(() => {}, 10_000);
+      try {
+        await assert.rejects(
+          sdk.request("POST", "/embeddings", {
+            body: { model: "m", input: "x" },
+            signal: makeSignal(),
+          }),
+          (error) => error.name === expectedName,
+        );
+      } finally {
+        clearTimeout(keepAlive);
+      }
+      assert.deepEqual(headers, ["v=1;a=0;s=0"]);
+    });
   });
-});
+}
 
 test("the SDK timeout option aborts terminally: no retry, no second header", async () => {
   await withEnv(scrubbed, async () => {

@@ -188,12 +188,32 @@ const TLS_CODES = new Set([
   "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
 ]);
 
+// undici raises SocketError (code UND_ERR_SOCKET) for several unrelated
+// phases, distinguished only by its message: verified against Node 20.20.2's
+// embedded undici, the set is "bad response" / "bad upgrade" (a malformed or
+// unusable response — a protocol failure), "bad connect" (a failed CONNECT
+// tunnel — the connect phase), and "other side closed" / "closed" (a genuine
+// peer reset). Mapping the whole code to `reset` would serialise a false
+// closed-enum fact for the first three.
+const SOCKET_PROTOCOL_MESSAGES = new Set(["bad response", "bad upgrade"]);
+const SOCKET_CONNECT_MESSAGES = new Set(["bad connect"]);
+const isSocketError = (code, name) =>
+  code === "UND_ERR_SOCKET" || name === "SocketError";
+const socketPhase = (code, name, message) => {
+  if (!isSocketError(code, name)) return null;
+  const normalized = message.trim().toLowerCase();
+  if (SOCKET_PROTOCOL_MESSAGES.has(normalized)) return "protocol_error";
+  if (SOCKET_CONNECT_MESSAGES.has(normalized)) return "connect_error";
+  return "reset";
+};
+
 // Highest-priority class wins across the whole `cause` chain, in the same
 // order as the Python classifier: timeouts, then TLS/DNS/socket phases, then
 // protocol, IO, and proxy, then unknown. Node's fetch wraps the real failure
 // as the `cause` of `TypeError: fetch failed` (verified against Node 20
 // undici for ENOTFOUND, ECONNREFUSED, ECONNRESET,
-// DEPTH_ZERO_SELF_SIGNED_CERT, ERR_SSL_WRONG_VERSION_NUMBER, HPE_*, and
+// DEPTH_ZERO_SELF_SIGNED_CERT, ERR_SSL_WRONG_VERSION_NUMBER, HPE_*,
+// UND_ERR_HEADERS_OVERFLOW, UND_ERR_SOCKET's message set, and
 // UND_ERR_CONNECT_TIMEOUT). A system ETIMEDOUT is split on `syscall`:
 // read/write map to the matching timeout class, anything else is the
 // connect phase. `pool_timeout` stays vocabulary-only here — no supported
@@ -234,25 +254,28 @@ const ERROR_CLASSIFIERS = [
   ["connect_refused", (code) => code === "ECONNREFUSED"],
   [
     "reset",
-    (code, name) =>
-      code === "ECONNRESET" || code === "UND_ERR_SOCKET" || name === "SocketError",
+    (code, name, message) =>
+      code === "ECONNRESET" || socketPhase(code, name, message) === "reset",
   ],
   [
     "connect_error",
-    (code) =>
+    (code, name, message) =>
       ["EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL", "ECONNABORTED", "EHOSTDOWN"].includes(
         code,
-      ),
+      ) || socketPhase(code, name, message) === "connect_error",
   ],
   [
     "protocol_error",
-    (code, name) =>
+    (code, name, message) =>
       code.startsWith("HPE_") ||
       name === "HTTPParserError" ||
       code.startsWith("ERR_HTTP2_") ||
       code === "EPROTO" ||
       code === "UND_ERR_REQ_CONTENT_LENGTH_MISMATCH" ||
-      code === "UND_ERR_RES_CONTENT_LENGTH_MISMATCH",
+      code === "UND_ERR_RES_CONTENT_LENGTH_MISMATCH" ||
+      code === "UND_ERR_HEADERS_OVERFLOW" ||
+      name === "HeadersOverflowError" ||
+      socketPhase(code, name, message) === "protocol_error",
   ],
   ["io_error", (code) => code === "EPIPE" || code === "ERR_STREAM_PREMATURE_CLOSE"],
   [
@@ -298,6 +321,10 @@ export class RequestRecorder {
     this._now = typeof now === "function" ? now : () => performance.now();
     this.attempts = [];
     this.failoverUsed = false;
+    // The true number of attempts begun, tracked separately from
+    // `attempts.length` so the stored history can stay bounded (see
+    // _storeAttempt) without the attempt index ever rewinding.
+    this._attemptCount = 0;
     this._firstStarted = null;
     this._attemptStarted = null;
     this._currentHost = null;
@@ -310,15 +337,25 @@ export class RequestRecorder {
       if (this._firstStarted === null) this._firstStarted = started;
       this._attemptStarted = started;
       this._currentHost = hostEnum(baseUrl);
-      this._currentIndex = this.attempts.length;
+      this._currentIndex = Math.max(this._attemptCount, this.attempts.length);
     } catch {
       /* telemetry never fails a request */
     }
   }
 
+  /**
+   * Keep the history BOUNDED: `maxRetries` is caller-configured and only the
+   * newest attempt is ever serialised, so past the contract's 0..99 range —
+   * where headerValue() already suppresses the header outright — the tail slot
+   * is overwritten instead of the array growing. Telemetry must not turn the
+   * engine's O(1) memory into O(maxRetries).
+   */
   _storeAttempt(attempt) {
+    this._attemptCount = Math.max(this._attemptCount, attempt.index + 1);
     if (attempt.index < this.attempts.length) {
       this.attempts[attempt.index] = attempt;
+    } else if (this.attempts.length > MAX_ATTEMPT_INDEX) {
+      this.attempts[this.attempts.length - 1] = attempt;
     } else {
       this.attempts.push(attempt);
     }
