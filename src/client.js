@@ -39,6 +39,7 @@ import {
   randomOAuthState,
 } from "./internal/pkce.js";
 import { collectCompletion, iterSseChunks, iterSseEvents } from "./internal/sse.js";
+import { resolveTelemetryEnabled } from "./internal/telemetry.js";
 import {
   DEFAULT_USER_AGENT,
   baseUrls as inferenceBaseUrls,
@@ -63,6 +64,7 @@ export class TrustedRouter {
     regionalAffinity = null,
     regionProbeTimeout = DEFAULT_REGION_PROBE_TIMEOUT_MS,
     failoverRegions = null,
+    telemetry = null,
   } = {}) {
     if (!fetchImpl) {
       throw new Error("A fetch implementation is required");
@@ -101,6 +103,12 @@ export class TrustedRouter {
     this.regionProbeTimeout = Math.max(100, Number(regionProbeTimeout) || 0);
     this.regionAffinityPending = useRegionalAffinity && this.regionalFailover;
     this.regionAffinityPromise = null;
+    this.telemetryEnabled = resolveTelemetryEnabled(telemetry, {
+      baseUrl: this.baseUrl,
+      controlBaseUrl: this.controlBaseUrl,
+      environ:
+        typeof process !== "undefined" && process.env ? process.env : {},
+    });
   }
 
   // ---- core request loop ----------------------------------------------

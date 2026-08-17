@@ -71,4 +71,14 @@ export {
 } from "./internal/orchestration.js";
 export { createOAuthPkcePair, randomOAuthState } from "./internal/pkce.js";
 export { collectCompletion } from "./internal/sse.js";
+export {
+  DEFAULT_TELEMETRY_PATH,
+  TELEMETRY_ENDPOINTS,
+  TELEMETRY_ERROR_CLASSES,
+  TELEMETRY_FINAL_OUTCOMES,
+  TELEMETRY_HOSTS,
+  TELEMETRY_OUTCOMES,
+  TELEMETRY_SCHEMA_VERSION,
+  resolveTelemetryEnabled,
+} from "./internal/telemetry.js";
 export { fetchTrustRelease, trustRelease } from "./internal/trust.js";

@@ -26,6 +26,25 @@ export declare const ATHENA_MODEL: "trustedrouter/athena";
 export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
 export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
 
+// ---- client telemetry (contract v1) --------------------------------------
+
+export declare const TELEMETRY_SCHEMA_VERSION: 1;
+export declare const DEFAULT_TELEMETRY_PATH: "/client-events";
+export declare const TELEMETRY_HOSTS: ReadonlyArray<string>;
+export declare const TELEMETRY_ENDPOINTS: ReadonlyArray<string>;
+export declare const TELEMETRY_OUTCOMES: ReadonlyArray<string>;
+export declare const TELEMETRY_FINAL_OUTCOMES: ReadonlyArray<string>;
+export declare const TELEMETRY_ERROR_CLASSES: ReadonlyArray<string>;
+
+export declare function resolveTelemetryEnabled(
+  explicit: boolean | null | undefined,
+  options: {
+    baseUrl: string;
+    controlBaseUrl: string;
+    environ: Record<string, string | undefined>;
+  },
+): boolean;
+
 export type FusionSelectionStrategy =
   | "synthesize"
   | "synthesize_non_refusals"
@@ -192,6 +211,13 @@ export interface TrustedRouterOptions {
   regionalAffinity?: boolean | null;
   /** Per-region health-probe timeout in milliseconds. Default: 1500. */
   regionProbeTimeout?: number;
+  /**
+   * Send the content-free x-tr-client reliability header on inference
+   * attempts (client telemetry contract v1). Default: resolved from
+   * TRUSTEDROUTER_TELEMETRY, then DO_NOT_TRACK, then on only for known
+   * TrustedRouter base and control hosts.
+   */
+  telemetry?: boolean | null;
 }
 
 export interface PerCallOptions {
@@ -448,6 +474,7 @@ export declare class TrustedRouter {
   maxRetries: number;
   regionalFailover: boolean;
   baseUrls: string[];
+  telemetryEnabled: boolean;
   constructor(options?: TrustedRouterOptions);
 
   request(

@@ -73,6 +73,7 @@ import {
   REGION_BASE_URLS,
   VERSION,
 } from "./models.js";
+import { RequestRecorder } from "./telemetry.js";
 
 // ---- L1: policy kernel (pure, no I/O, no clock) -------------------------
 
@@ -265,12 +266,15 @@ export async function rankRegionalBaseUrls(ctx) {
 // ---- L4: attempt assembly -------------------------------------------------
 
 export function userAgent() {
-  const node =
+  // Exactly the grammar the enclave parses (client telemetry contract v1):
+  // trusted-router-js/SEMVER with an optional runtime/version token. The old
+  // trailing platform word made the whole value unparseable server-side, so
+  // the SDK was invisible in the reliability data.
+  const runtime =
     typeof process !== "undefined" && process.versions?.node
-      ? `node/${process.versions.node}`
-      : "browser";
-  const platform = typeof process !== "undefined" ? process.platform : "web";
-  return `trusted-router-js/${VERSION} ${node} ${platform}`;
+      ? ` node/${process.versions.node}`
+      : "";
+  return `trusted-router-js/${VERSION}${runtime}`;
 }
 
 export const DEFAULT_USER_AGENT = userAgent();
@@ -323,6 +327,12 @@ export function buildHeaders(ctx, {
   if (bearer && !out.has("authorization")) {
     out.set("authorization", `Bearer ${bearer}`);
   }
+  // x-tr-client is reserved for the engine (client telemetry contract v1).
+  // Strip it from every caller source — constructor headers, per-call
+  // headers, extraHeaders — so nothing can ride the reserved name past the
+  // opt-out / custom-host / control-plane suppression rules; performRequest
+  // adds a validated value per eligible attempt.
+  out.delete("x-tr-client");
   return out;
 }
 
@@ -360,6 +370,7 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
 export async function performRequest(ctx, method, path, init = {}) {
   const {
     _baseUrls = null,
+    _streaming = false,
     headers = {},
     body,
     apiKey = null,
@@ -371,6 +382,15 @@ export async function performRequest(ctx, method, path, init = {}) {
   } = init;
 
   const isInferenceRequest = _baseUrls === null;
+  // Telemetry header channel (contract v1): ONE recorder per logical call,
+  // engine-owned, so this loop stays the single emit point. Control-plane
+  // calls (pinned _baseUrls) and opted-out clients never construct one; a
+  // custom current host makes headerValue() return null. The recorder's
+  // methods swallow their own failures — telemetry never fails a request.
+  const recorder =
+    isInferenceRequest && ctx.telemetryEnabled === true
+      ? new RequestRecorder({ streaming: _streaming === true, now: ctx._telemetryNow })
+      : null;
   const requestIdempotencyKey = idempotencyKey ?? (
     isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
       ? newIdempotencyKey()
@@ -390,6 +410,16 @@ export async function performRequest(ctx, method, path, init = {}) {
   let baseIndex = 0;
   while (true) {
     const url = `${candidates[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+    // The base Headers never carries x-tr-client (buildHeaders strips it);
+    // an eligible attempt gets its own clone so a fetch implementation that
+    // retains a previous attempt's headers never sees them mutate.
+    let attemptHeaders = requestHeaders;
+    if (recorder) {
+      recorder.beginAttempt(candidates[baseIndex]);
+      const clientHeader = recorder.headerValue();
+      attemptHeaders = new Headers(requestHeaders);
+      if (clientHeader) attemptHeaders.set("x-tr-client", clientHeader);
+    }
     // ONE decision point per attempt. `decision.move` asks the policy kernel
     // whether the retry MAY change host; the shared tail below is the only
     // place that actually advances.
@@ -401,7 +431,7 @@ export async function performRequest(ctx, method, path, init = {}) {
         url,
         {
           method,
-          headers: requestHeaders,
+          headers: attemptHeaders,
           body: requestBody,
           ...rest,
         },
@@ -409,6 +439,9 @@ export async function performRequest(ctx, method, path, init = {}) {
       );
     } catch (error) {
       if (error?.name === "AbortError") throw error;
+      // Record with the live error object BEFORE transportError() flattens
+      // the failure to a message string — after that only the string is left.
+      recorder?.onTransportError(error);
       if (
         attempt >= ctx.maxRetries ||
         !shouldRetryTransport(isInferenceRequest, ctx.regionalFailover)
@@ -420,6 +453,7 @@ export async function performRequest(ctx, method, path, init = {}) {
       decision = { move: true, retryAfter: null };
     }
     if (response !== null) {
+      recorder?.onResponse(response.status);
       if (
         attempt >= ctx.maxRetries ||
         !shouldRetryResponse(
@@ -451,6 +485,7 @@ export async function performRequest(ctx, method, path, init = {}) {
       baseIndex < candidates.length - 1
     ) {
       baseIndex += 1; // THE ONLY candidate advance in the codebase.
+      recorder?.onMoved();
     }
     await sleep(retrySleepMs(attempt, decision.retryAfter));
     attempt += 1;
@@ -464,5 +499,5 @@ export async function requestJson(ctx, method, path, init = {}) {
 
 /** Streaming-open mode: hand back the terminal Response undrained. */
 export async function requestStream(ctx, method, path, init = {}) {
-  return performRequest(ctx, method, path, init);
+  return performRequest(ctx, method, path, { ...init, _streaming: true });
 }

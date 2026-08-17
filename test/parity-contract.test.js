@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   CONFIDENTIAL_MODEL,
+  DEFAULT_TELEMETRY_PATH,
   E2E_MODEL,
   InternalError,
   MAP_REDUCE_MODEL,
@@ -10,7 +12,14 @@ import {
   SELECTOR_MODEL,
   SUBAGENT_MODEL,
   SYNTH_MODEL,
+  TELEMETRY_ENDPOINTS,
+  TELEMETRY_ERROR_CLASSES,
+  TELEMETRY_FINAL_OUTCOMES,
+  TELEMETRY_HOSTS,
+  TELEMETRY_OUTCOMES,
+  TELEMETRY_SCHEMA_VERSION,
   US_MODEL,
+  VERSION,
   ZDR_MODEL,
   advisorTool,
   fusionTool,
@@ -18,6 +27,7 @@ import {
   selectorTool,
   subagentTool,
 } from "../src/index.js";
+import { DEFAULT_USER_AGENT } from "../src/internal/transport.js";
 
 test("exports stable routing and orchestration aliases", () => {
   assert.equal(ZDR_MODEL, "trustedrouter/zdr");
@@ -137,6 +147,71 @@ test("provider preferences are exact, composable, and validated", () => {
   assert.throws(() => new ProviderPreferences({ minPrivacy: "probably" }), TypeError);
   assert.throws(() => new ProviderPreferences({ jurisdiction: "eu" }), TypeError);
   assert.throws(() => new ProviderPreferences({ usage: "free" }), TypeError);
+});
+
+test("telemetry parity constants pin the contract v1 vocabulary", () => {
+  // These values are shared with every other TrustedRouter SDK and with the
+  // server's ClickHouse schema. They pin the vocabulary for the future
+  // beacon channel too — do not change them without a coordinated release.
+  assert.equal(TELEMETRY_SCHEMA_VERSION, 1);
+  assert.equal(DEFAULT_TELEMETRY_PATH, "/client-events");
+  assert.deepEqual(
+    [...TELEMETRY_HOSTS],
+    ["apex", "ally", "uptime", "us_central1", "us_east4", "europe_west4", "control", "custom"],
+  );
+  assert.deepEqual(
+    [...TELEMETRY_ENDPOINTS],
+    [
+      "chat_completions",
+      "messages",
+      "responses",
+      "embeddings",
+      "images",
+      "videos",
+      "models",
+      "fusion",
+      "control_other",
+      "inference_other",
+    ],
+  );
+  assert.deepEqual(
+    [...TELEMETRY_OUTCOMES],
+    ["ok", "http_error", "transport_error", "timeout", "stream_broken", "aborted"],
+  );
+  assert.deepEqual(
+    [...TELEMETRY_FINAL_OUTCOMES],
+    [...TELEMETRY_OUTCOMES, "exhausted"],
+  );
+  assert.deepEqual(
+    [...TELEMETRY_ERROR_CLASSES],
+    [
+      "dns",
+      "tls",
+      "connect_refused",
+      "connect_timeout",
+      "connect_error",
+      "read_timeout",
+      "write_timeout",
+      "pool_timeout",
+      "protocol_error",
+      "reset",
+      "io_error",
+      "proxy_error",
+      "stream_stalled",
+      "unknown",
+    ],
+  );
+});
+
+test("VERSION matches package.json and User-Agent matches the contract grammar", async () => {
+  const pkg = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(VERSION, pkg.version);
+  assert.match(
+    DEFAULT_USER_AGENT,
+    /^trusted-router-js\/(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?( [a-z]{1,10}\/[0-9A-Za-z.+-]{1,24})?$/,
+  );
 });
 
 test("errors expose attribution and retain the raw payload", () => {
