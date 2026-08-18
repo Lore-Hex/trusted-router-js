@@ -396,12 +396,21 @@ test("completion collection aggregates ordered Synth events and summary metadata
   };
 
   const completion = collectCompletion([
-    { trustedrouter: { synth: panelDone }, choices: [] },
+    {
+      trustedrouter: {
+        request_id: "req-synth-1",
+        route: { gateway: "panel-route" },
+        synth: panelDone,
+      },
+      choices: [],
+    },
     { trustedrouter: { synth: firstJudgeDone }, choices: [] },
     { trustedrouter: { synth: secondJudgeDone }, choices: [] },
     { trustedrouter: { synth: finalDone }, choices: [] },
     {
       trustedrouter: {
+        trace_id: "trace-synth-1",
+        route: { gateway: "final-route" },
         synth: {
           summary: { winner: "final/model", panel_size: 1 },
           total_latency_ms: 42,
@@ -417,6 +426,9 @@ test("completion collection aggregates ordered Synth events and summary metadata
   ]);
 
   assert.deepEqual(completion.trustedrouter, {
+    request_id: "req-synth-1",
+    route: { gateway: "final-route" },
+    trace_id: "trace-synth-1",
     synth: {
       summary: { winner: "final/model", panel_size: 1 },
       total_latency_ms: 42,

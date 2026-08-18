@@ -7,9 +7,10 @@
   `request()` / `rawRequest()` calls remain deliberately unkeyed; callers must
   provide `idempotencyKey` to authorize ordinary status retries or replay after
   an ambiguous write.
-- Fixed buffered Synth completions to preserve every ordered observability
-  event and derive panel, judge-attempt, selected-judge, final-attempt, and
-  summary metadata instead of overwriting `trustedrouter` on each chunk.
+- Fixed buffered Synth completions to merge non-Synth `trustedrouter` envelope
+  fields, preserve every ordered observability event, and derive panel,
+  judge-attempt, selected-judge, final-attempt, and summary metadata instead of
+  overwriting `trustedrouter` on each chunk.
 - API behavior change: `fetchAttestationAgain()` now verifies the follow-up
   document and returns `GatewayAttestation`; it no longer returns an unverified
   raw `Uint8Array`.

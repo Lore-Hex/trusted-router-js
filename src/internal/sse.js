@@ -303,12 +303,22 @@ export function collectCompletion(chunks) {
 }
 
 function collectTrustedRouterMetadata(chunks) {
+  let trustedRouterDetails = {};
   const synthEvents = [];
   const synthDetails = {};
 
   for (const chunk of chunks) {
     const trusted = chunk?.trustedrouter;
     if (!trusted || typeof trusted !== "object" || Array.isArray(trusted)) continue;
+
+    // Synth needs structural aggregation, but every sibling is ordinary
+    // envelope metadata. Preserve those fields across chunks with the same
+    // last-frame-wins rule used by the completion envelope itself.
+    trustedRouterDetails = {
+      ...trustedRouterDetails,
+      ...Object.fromEntries(Object.entries(trusted).filter(([key]) => key !== "synth")),
+    };
+
     const synth = trusted.synth;
     if (!synth || typeof synth !== "object" || Array.isArray(synth)) continue;
 
@@ -317,7 +327,10 @@ function collectTrustedRouterMetadata(chunks) {
     else Object.assign(synthDetails, synthChunk);
   }
 
-  if (synthEvents.length === 0 && Object.keys(synthDetails).length === 0) return null;
+  const hasSynth = synthEvents.length > 0 || Object.keys(synthDetails).length > 0;
+  if (!hasSynth) {
+    return Object.keys(trustedRouterDetails).length ? trustedRouterDetails : null;
+  }
 
   const synth = { ...synthDetails };
   if (synthEvents.length) synth.events = synthEvents;
@@ -342,7 +355,7 @@ function collectTrustedRouterMetadata(chunks) {
     synth.final_attempts = finalAttempts;
   }
 
-  return { synth };
+  return { ...trustedRouterDetails, synth };
 }
 
 function trustedRouterSynthEventDetail(event) {
