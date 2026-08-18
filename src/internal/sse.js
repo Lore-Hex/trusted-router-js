@@ -192,11 +192,14 @@ export function collectCompletion(chunks) {
     "refusal",
   ]);
   let usage = null;
+  const trustedrouter = collectTrustedRouterMetadata(chunks);
   const envelope = {};
   const choicesByIndex = new Map();
   for (const c of chunks) {
     for (const [key, value] of Object.entries(c ?? {})) {
-      if (!["choices", "usage", "object"].includes(key)) envelope[key] = value;
+      if (!["choices", "usage", "trustedrouter", "object"].includes(key)) {
+        envelope[key] = value;
+      }
     }
     if (c?.usage && typeof c.usage === "object") usage = c.usage;
     if (!Array.isArray(c?.choices)) continue;
@@ -295,6 +298,60 @@ export function collectCompletion(chunks) {
     choices,
   };
   if (usage !== null) result.usage = usage;
+  if (trustedrouter !== null) result.trustedrouter = trustedrouter;
+  return result;
+}
+
+function collectTrustedRouterMetadata(chunks) {
+  const synthEvents = [];
+  const synthDetails = {};
+
+  for (const chunk of chunks) {
+    const trusted = chunk?.trustedrouter;
+    if (!trusted || typeof trusted !== "object" || Array.isArray(trusted)) continue;
+    const synth = trusted.synth;
+    if (!synth || typeof synth !== "object" || Array.isArray(synth)) continue;
+
+    const synthChunk = { ...synth };
+    if (Object.hasOwn(synthChunk, "event")) synthEvents.push(synthChunk);
+    else Object.assign(synthDetails, synthChunk);
+  }
+
+  if (synthEvents.length === 0 && Object.keys(synthDetails).length === 0) return null;
+
+  const synth = { ...synthDetails };
+  if (synthEvents.length) synth.events = synthEvents;
+
+  const panel = [];
+  const judgeAttempts = [];
+  const finalAttempts = [];
+  for (const event of synthEvents) {
+    const detail = trustedRouterSynthEventDetail(event);
+    if (detail === null) continue;
+    if (event.event === "panel.done") panel.push(detail);
+    else if (event.event === "judge.done") judgeAttempts.push(detail);
+    else if (event.event === "final.done") finalAttempts.push(detail);
+  }
+
+  if (panel.length && !Object.hasOwn(synth, "panel")) synth.panel = panel;
+  if (judgeAttempts.length) {
+    if (!Object.hasOwn(synth, "judge_attempts")) synth.judge_attempts = judgeAttempts;
+    if (!Object.hasOwn(synth, "judge")) synth.judge = judgeAttempts.at(-1);
+  }
+  if (finalAttempts.length && !Object.hasOwn(synth, "final_attempts")) {
+    synth.final_attempts = finalAttempts;
+  }
+
+  return { synth };
+}
+
+function trustedRouterSynthEventDetail(event) {
+  const detail = event.detail;
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  const result = { ...detail };
+  for (const key of ["stage", "index", "model"]) {
+    if (Object.hasOwn(event, key) && !Object.hasOwn(result, key)) result[key] = event[key];
+  }
   return result;
 }
 

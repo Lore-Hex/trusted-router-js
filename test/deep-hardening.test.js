@@ -364,3 +364,73 @@ test("completion collection preserves model-specific fields and all choices", ()
   assert.deepEqual(completion.choices[1].logprobs, { content: [] });
   assert.equal(completion.usage.total_tokens, 5);
 });
+
+test("completion collection aggregates ordered Synth events and summary metadata", () => {
+  const panelDone = {
+    event: "panel.done",
+    stage: "panel",
+    index: 0,
+    model: "panel/top-level",
+    detail: { output: "candidate", model: "panel/detail" },
+  };
+  const firstJudgeDone = {
+    event: "judge.done",
+    stage: "judge",
+    index: 0,
+    model: "judge/a",
+    detail: { score: 0.7 },
+  };
+  const secondJudgeDone = {
+    event: "judge.done",
+    stage: "judge",
+    index: 1,
+    model: "judge/b",
+    detail: { score: 0.9 },
+  };
+  const finalDone = {
+    event: "final.done",
+    stage: "final",
+    index: 0,
+    model: "final/model",
+    detail: { output: "answer" },
+  };
+
+  const completion = collectCompletion([
+    { trustedrouter: { synth: panelDone }, choices: [] },
+    { trustedrouter: { synth: firstJudgeDone }, choices: [] },
+    { trustedrouter: { synth: secondJudgeDone }, choices: [] },
+    { trustedrouter: { synth: finalDone }, choices: [] },
+    {
+      trustedrouter: {
+        synth: {
+          summary: { winner: "final/model", panel_size: 1 },
+          total_latency_ms: 42,
+        },
+      },
+      choices: [],
+    },
+    {
+      id: "chat-synth",
+      model: "trustedrouter/synth",
+      choices: [{ index: 0, delta: { content: "done" }, finish_reason: "stop" }],
+    },
+  ]);
+
+  assert.deepEqual(completion.trustedrouter, {
+    synth: {
+      summary: { winner: "final/model", panel_size: 1 },
+      total_latency_ms: 42,
+      events: [panelDone, firstJudgeDone, secondJudgeDone, finalDone],
+      panel: [{ output: "candidate", model: "panel/detail", stage: "panel", index: 0 }],
+      judge_attempts: [
+        { score: 0.7, stage: "judge", index: 0, model: "judge/a" },
+        { score: 0.9, stage: "judge", index: 1, model: "judge/b" },
+      ],
+      judge: { score: 0.9, stage: "judge", index: 1, model: "judge/b" },
+      final_attempts: [
+        { output: "answer", stage: "final", index: 0, model: "final/model" },
+      ],
+    },
+  });
+  assert.equal(completion.choices[0].message.content, "done");
+});
