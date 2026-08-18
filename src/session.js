@@ -65,7 +65,15 @@ export async function verifyGatewaySession({
     });
     await assertSocketPinnable(socket, socketState);
     const session = { attestation, socket, exporter, leafDer };
-    sessionMeta.set(session, { ...meta, timeoutMs, policy, jwks, jwksUrl });
+    sessionMeta.set(session, {
+      ...meta,
+      timeoutMs,
+      policy: snapshotPolicy(policy),
+      jwks: snapshotJwks(jwks),
+      jwksUrl,
+      exporter: new Uint8Array(exporter),
+      leafDer: new Uint8Array(leafDer),
+    });
     keepSocket = true;
     return session;
   } finally {
@@ -98,7 +106,7 @@ export async function fetchAttestationAgain(session, {
     EXPORTER_LENGTH,
     EXPORTER_LABEL,
   );
-  if (!Buffer.from(followupExporter).equals(Buffer.from(session.exporter))) {
+  if (!Buffer.from(followupExporter).equals(Buffer.from(meta.exporter))) {
     throw new AttestationVerificationError(
       "TLS exporter changed on a reused socket",
     );
@@ -106,11 +114,33 @@ export async function fetchAttestationAgain(session, {
   return verifyGatewayAttestation(document, {
     policy: meta.policy,
     nonceHex,
-    tlsCertDer: session.leafDer,
-    tlsExporter: session.exporter,
+    tlsCertDer: meta.leafDer,
+    tlsExporter: meta.exporter,
     jwks: meta.jwks,
     jwksUrl: meta.jwksUrl,
   });
+}
+
+function snapshotPolicy(policy) {
+  return {
+    ...policy,
+    imageDigests: Array.isArray(policy.imageDigests)
+      ? [...policy.imageDigests]
+      : policy.imageDigests,
+    imageReferences: Array.isArray(policy.imageReferences)
+      ? [...policy.imageReferences]
+      : policy.imageReferences,
+  };
+}
+
+function snapshotJwks(jwks) {
+  if (jwks === null) return null;
+  return {
+    ...jwks,
+    keys: Array.isArray(jwks.keys)
+      ? jwks.keys.map((key) => ({ ...key }))
+      : jwks.keys,
+  };
 }
 
 async function loadNodeRuntime() {
