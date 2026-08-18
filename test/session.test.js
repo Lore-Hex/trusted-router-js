@@ -383,7 +383,9 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
   const policy = {
     audience: "quill-cloud",
     imageDigest: "sha256:loopback",
+    imageDigests: ["sha256:loopback"],
     imageReference: "localhost/test:session",
+    imageReferences: ["localhost/test:session"],
   };
 
   const server = createServer({
@@ -458,8 +460,31 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
     assert.equal(sessionA.attestation.certSha256, certSha);
     assert.equal(sessionA.attestation.nonce.length, EXPORTER_LENGTH * 2);
 
-    const secondJwt = await fetchAttestationAgain(sessionA);
-    assert.ok(secondJwt.length > 0);
+    // Follow-up verification is pinned to snapshots captured at the initial
+    // verification boundary; mutating caller-owned inputs or public result
+    // buffers afterwards must not weaken or corrupt it.
+    const originalPolicy = {
+      ...policy,
+      imageDigests: [...policy.imageDigests],
+      imageReferences: [...policy.imageReferences],
+    };
+    const originalJwksKeys = jwks.keys.map((key) => ({ ...key }));
+    const originalExporter = new Uint8Array(sessionA.exporter);
+    const originalLeafDer = new Uint8Array(sessionA.leafDer);
+    policy.imageDigest = "sha256:caller-mutated";
+    policy.imageDigests[0] = "sha256:caller-mutated";
+    policy.imageReference = "caller/mutated:latest";
+    policy.imageReferences[0] = "caller/mutated:latest";
+    jwks.keys[0].kid = "caller-mutated";
+    sessionA.exporter.fill(0);
+    sessionA.leafDer.fill(0);
+    const secondAttestation = await fetchAttestationAgain(sessionA);
+    Object.assign(policy, originalPolicy);
+    jwks.keys = originalJwksKeys;
+    sessionA.exporter.set(originalExporter);
+    sessionA.leafDer.set(originalLeafDer);
+    assert.equal(secondAttestation.certSha256, certSha);
+    assert.equal(secondAttestation.nonce.length, EXPORTER_LENGTH * 2);
     assert.equal(bytesToHex(sessionA.exporter), bytesToHex(serverExporters[1]));
 
     sessionB = await verifyGatewaySession({

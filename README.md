@@ -97,8 +97,16 @@ G6 TLS session pinning uses Node TLS sockets, so import it from the Node-only
 session subpath rather than the browser-safe package root:
 
 ```js
-import { verifyGatewaySession } from "@lore-hex/trusted-router/session";
+import {
+  verifyGatewaySession,
+  fetchAttestationAgain,
+} from "@lore-hex/trusted-router/session";
 ```
+
+`fetchAttestationAgain(session)` re-fetches and verifies the document over the
+already-pinned socket and returns a verified `GatewayAttestation`. This is a
+return-type change from the earlier raw `Uint8Array`; an HTTP 200 alone is no
+longer exposed as though it were a trusted follow-up.
 
 ## Fusion
 
@@ -307,6 +315,14 @@ Disable with `maxRetries: 0`:
 const client = new TrustedRouter({ apiKey: "...", maxRetries: 0 });
 ```
 
+Typed inference and control-plane mutation methods mint one idempotency key at
+the logical call boundary and reuse it unchanged for every retry. The generic
+`client.request(...)` and `client.rawRequest(...)` escape hatches deliberately
+do not guess whether an arbitrary write is idempotent: pass `idempotencyKey`
+explicitly if an unsafe method such as `POST` should be replayed after an
+ambiguous transport failure or an ordinary retryable status. A failure known
+to happen before any bytes were sent remains safe to retry without a key.
+
 Regional failover applies only to inference routes and preserves the same
 idempotency key when it advances to another healthy gateway. Control-plane
 calls retry on the configured control host.
@@ -320,7 +336,7 @@ Every chat method (and `request()` for ad-hoc paths) accepts:
 | `apiKey` | Override the instance bearer for this call only (threadsafe) |
 | `extraHeaders` | Object of headers to merge in (trace IDs, custom routing) |
 | `workspaceId` | Sets `X-TrustedRouter-Workspace` for workspace-scoped management calls |
-| `idempotencyKey` | Adds `Idempotency-Key:` so the gateway dedupes retries — **strongly recommended for billing** |
+| `idempotencyKey` | Supplies the replay key; typed mutations auto-mint one when omitted, while generic `request()` does not |
 | `timeout` | Per-call timeout in milliseconds (uses `AbortController`) |
 
 ```js

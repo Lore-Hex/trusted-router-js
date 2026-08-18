@@ -109,6 +109,7 @@ test("regional affinity pins fastest endpoint and preserves idempotency on failo
   try {
     const result = await client.request("POST", "/chat/completions", {
       body: {},
+      idempotencyKey: "caller-key",
     });
     assert.equal(result.data.ok, true);
   } finally {
@@ -119,7 +120,7 @@ test("regional affinity pins fastest endpoint and preserves idempotency on failo
   assert.deepEqual(healthAtFirstInference, ["api-us-east4.quillrouter.com"]);
   assert.equal(inference[0].host, "api-us-east4.quillrouter.com");
   assert.notEqual(inference[1].host, inference[0].host);
-  assert.match(inference[0].idempotencyKey, /^tr-req-/);
+  assert.equal(inference[0].idempotencyKey, "caller-key");
   assert.equal(inference[1].idempotencyKey, inference[0].idempotencyKey);
 });
 
@@ -143,7 +144,10 @@ test("regional affinity backs off on 429 without abandoning the pinned region", 
     },
   });
 
-  const result = await client.request("POST", "/chat/completions", { body: {} });
+  const result = await client.request("POST", "/chat/completions", {
+    body: {},
+    idempotencyKey: "caller-key",
+  });
 
   assert.equal(result.data.ok, true);
   assert.equal(inferenceHosts.length, 2);
@@ -833,11 +837,8 @@ test("chatCompletionsRawStream raises typed error on 429", async () => {
 
 // ---- collectCompletion -------------------------------------------------
 
-test("collectCompletion: empty list yields minimal envelope", () => {
-  const out = collectCompletion([]);
-  assert.equal(out.object, "chat.completion");
-  assert.equal(out.choices[0].message.content, "");
-  assert.equal(out.choices[0].finish_reason, "stop");
+test("collectCompletion: empty list rejects instead of fabricating success", () => {
+  assert.throws(() => collectCompletion([]), InternalError);
 });
 
 test("collectCompletion: concatenates content deltas, propagates last id+model", () => {

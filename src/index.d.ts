@@ -232,7 +232,7 @@ export interface PerCallOptions {
 export type RequestTags = Record<string, string>;
 
 export interface RequestOptions
-  extends Omit<RequestInit, "headers" | "body">, PerCallOptions {
+  extends Omit<RequestInit, "headers" | "body" | "method" | "redirect">, PerCallOptions {
   headers?: TrustedRouterHeaders;
   body?: BodyInit | Record<string, unknown> | null;
 }
@@ -247,14 +247,21 @@ export interface ChatMessage {
   role: string;
   content: string | null;
   name?: string | null;
+  reasoning?: string | null;
+  reasoning_content?: string | null;
+  refusal?: string | null;
   tool_calls?: Array<Record<string, unknown>> | null;
+  function_call?: Record<string, unknown> | null;
   tool_call_id?: string | null;
+  [extra: string]: unknown;
 }
 
 export interface ChatChoice {
   index: number;
   message: ChatMessage;
   finish_reason?: string | null;
+  logprobs?: Record<string, unknown> | null;
+  [extra: string]: unknown;
 }
 
 export interface ChatUsage {
@@ -280,7 +287,16 @@ export interface ChatCompletionChunk {
   model?: string;
   choices: Array<{
     index?: number;
-    delta?: { role?: string; content?: string | null; tool_calls?: unknown[] };
+    delta?: {
+      role?: string;
+      content?: string | null;
+      reasoning?: string | null;
+      reasoning_content?: string | null;
+      refusal?: string | null;
+      tool_calls?: unknown[];
+      function_call?: Record<string, unknown> | null;
+      [extra: string]: unknown;
+    };
     finish_reason?: string | null;
   }>;
   [extra: string]: unknown;

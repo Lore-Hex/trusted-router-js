@@ -156,7 +156,10 @@ test("a retry after a non-timeout transport failure carries po=transport_error",
       return okJson();
     });
     assert.deepEqual(
-      await sdk.request("POST", "/embeddings", { body: { model: "m", input: "x" } }),
+      await sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "x" },
+        idempotencyKey: "caller-key",
+      }),
       { ok: true },
     );
     assert.match(
@@ -178,7 +181,10 @@ test("a caller TimeoutError (AbortSignal.timeout) records po=timeout with pc=unk
       }
       return okJson();
     });
-    await sdk.request("POST", "/embeddings", { body: { model: "m", input: "x" } });
+    await sdk.request("POST", "/embeddings", {
+      body: { model: "m", input: "x" },
+      idempotencyKey: "caller-key",
+    });
     // A timeout the client observed, of unknowable class: outcome timeout,
     // class unknown — mirroring the Python reference's split between the
     // two. (AbortError stays terminal and untouched.)
@@ -754,7 +760,7 @@ for (const [label, makeSignal, expectedName, perCall] of [
   });
 }
 
-test("a genuine transport failure racing a late abort is still recorded as a host fact", async () => {
+test("a genuine transport failure racing a late abort cancels the retry backoff", async () => {
   await withEnv(scrubbed, async () => {
     // The cancellation check must be CAUSAL. A `signal.aborted` test alone is
     // too coarse: here a real ECONNRESET rejects and the caller aborts in the
@@ -789,6 +795,7 @@ test("a genuine transport failure racing a late abort is still recorded as a hos
     await assert.rejects(
       sdk.request("POST", "/embeddings", {
         body: { model: "m", input: "x" },
+        idempotencyKey: "caller-key",
         signal: controller.signal,
       }),
       (error) => {
@@ -796,16 +803,11 @@ test("a genuine transport failure racing a late abort is still recorded as a hos
         return true;
       },
     );
-    // The reset was recorded and retried: the second attempt reports the host's
-    // failure truthfully rather than the request vanishing as a cancellation.
-    assert.equal(headers.length, 2);
+    // The reset remains a host failure, but the caller's simultaneous abort
+    // cancels the retry backoff before another request reaches the wire.
+    assert.equal(headers.length, 1);
     assert.equal(headers[0], "v=1;a=0;s=0");
-    assert.match(
-      headers[1],
-      /^v=1;a=1;po=transport_error;pc=reset;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
-    );
-    // The retry then fails from the now-aborted signal, so the caller still
-    // gets their own reason.
+    // The caller still gets their own reason.
     assert.equal(thrown, reason);
   });
 });
@@ -881,8 +883,14 @@ test("concurrent logical calls keep independent recorder histories", async () =>
       return okJson();
     });
     const [first, second] = await Promise.all([
-      sdk.request("POST", "/embeddings", { body: { model: "m", input: "a" } }),
-      sdk.request("POST", "/embeddings", { body: { model: "m", input: "b" } }),
+      sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "a" },
+        idempotencyKey: "call-a",
+      }),
+      sdk.request("POST", "/embeddings", {
+        body: { model: "m", input: "b" },
+        idempotencyKey: "call-b",
+      }),
     ]);
     assert.deepEqual(first, { ok: true });
     assert.deepEqual(second, { ok: true });
@@ -1100,6 +1108,7 @@ test("retried attempts leave no abort listener on a signal that outlives them", 
     assert.deepEqual(
       await sdk.request("POST", "/embeddings", {
         body: { model: "m", input: "x" },
+        idempotencyKey: "caller-key",
         signal: controller.signal,
         timeout: 5_000,
       }),
