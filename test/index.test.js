@@ -118,7 +118,10 @@ test("defaults chat to trustedrouter auto and exposes region/provider helpers", 
       if (url.endsWith("/providers")) {
         return new Response(JSON.stringify({ data: [{ id: "vertex" }] }));
       }
-      return new Response(JSON.stringify({ ok: true }));
+      return new Response(
+        'data: {"id":"chat-1","model":"trustedrouter/auto","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
     },
   });
 
@@ -410,7 +413,7 @@ test("streaming rawRequest fails over before returning error response", async ()
         return new Response("regional gateway unavailable", { status: 503 });
       }
       return new Response(
-        'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
         {
           status: 200,
           headers: { "content-type": "text/event-stream" },

@@ -23,4 +23,4 @@ export declare function verifyGatewaySession(
 export declare function fetchAttestationAgain(
   session: GatewaySession,
   options?: { nonceHex?: string },
-): Promise<Uint8Array>;
+): Promise<import("./attestation.js").GatewayAttestation>;

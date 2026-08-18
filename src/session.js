@@ -65,7 +65,7 @@ export async function verifyGatewaySession({
     });
     await assertSocketPinnable(socket, socketState);
     const session = { attestation, socket, exporter, leafDer };
-    sessionMeta.set(session, { ...meta, timeoutMs });
+    sessionMeta.set(session, { ...meta, timeoutMs, policy, jwks, jwksUrl });
     keepSocket = true;
     return session;
   } finally {
@@ -75,8 +75,9 @@ export async function verifyGatewaySession({
 }
 
 /**
- * Fetch `/attestation` again over the same pinned TLS socket. This demonstrates
- * that follow-up traffic is still on the verified G6 exporter-bound session.
+ * Fetch and verify `/attestation` again over the same pinned TLS socket.
+ * Returning raw bytes here would let a caller mistake HTTP 200 for a verified
+ * follow-up, so this mirrors verifyGatewaySession and returns trusted claims.
  */
 export async function fetchAttestationAgain(session, {
   nonceHex = null,
@@ -89,9 +90,26 @@ export async function fetchAttestationAgain(session, {
       "session was not created by verifyGatewaySession",
     );
   }
-  return await fetchAttestationDocument(session.socket, {
+  const document = await fetchAttestationDocument(session.socket, {
     ...meta,
     nonceHex,
+  });
+  const followupExporter = session.socket.exportKeyingMaterial(
+    EXPORTER_LENGTH,
+    EXPORTER_LABEL,
+  );
+  if (!Buffer.from(followupExporter).equals(Buffer.from(session.exporter))) {
+    throw new AttestationVerificationError(
+      "TLS exporter changed on a reused socket",
+    );
+  }
+  return verifyGatewayAttestation(document, {
+    policy: meta.policy,
+    nonceHex,
+    tlsCertDer: session.leafDer,
+    tlsExporter: session.exporter,
+    jwks: meta.jwks,
+    jwksUrl: meta.jwksUrl,
   });
 }
 

@@ -31,9 +31,9 @@
  *      — test/should-retry-header.test.js "a labelled spent 502 is not
  *        retried, and does not move domains" / "a labelled-retryable 400 is
  *        retried even though the status says otherwise" (+ streaming twins).
- *  (5) Idempotency key minted once per logical call before the loop and
- *      re-sent verbatim across every attempt and domain move — the caller is
- *      never double-charged (idempotent auth + exactly-once settlement).
+ *  (5) Typed billed/mutating facades mint an idempotency key once before
+ *      entering this engine; caller-supplied keys are likewise re-sent
+ *      verbatim across every attempt and domain move.
  *      — test/features.test.js "regional affinity pins fastest endpoint and
  *        preserves idempotency on failover"; test/index.test.js "streaming
  *        rawRequest fails over before returning error response".
@@ -46,9 +46,9 @@
  *      still retries in place.
  *      — test/should-retry-header.test.js "a pinned client still retries in
  *        place" (+ streaming twin).
- *  (8) Transport errors (no server saw the request) may always move hosts
- *      within the flag gating; HTTP moves additionally require a
- *      failoverable status.
+ *  (8) Safe/keyed requests may retry transport errors. An unsafe unkeyed
+ *      mutation retries only failures proven to occur before sending bytes;
+ *      ambiguous post-send disconnects are terminal.
  *      — test/index.test.js "transport errors fail over to an alias";
  *        test/alias-domain-failover.test.js "a dead primary domain reaches
  *        an alias".
@@ -161,10 +161,30 @@ export function shouldRetryResponse(statusCode, _isInferenceRequest, _regionalFa
   return isRetryable(statusCode);
 }
 
-// A transport failure means no server saw the request, so it is always safe to
-// send again; regionalFailover only decides whether the retry may change host.
+// Whether transport failures are generally retryable. Replay safety for the
+// concrete request is enforced separately in the engine because it depends on
+// the method, key, and whether the failure is definitely pre-send.
 export function shouldRetryTransport(_isInferenceRequest, _regionalFailover) {
   return true;
+}
+
+const REPLAY_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
+
+function requestIsReplayable(method, idempotencyKey) {
+  return REPLAY_SAFE_METHODS.has(String(method).toUpperCase()) || Boolean(idempotencyKey);
+}
+
+function transportDefinitelyFailedBeforeSend(error) {
+  const safeCodes = new Set([
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED",
+    "UND_ERR_CONNECT_TIMEOUT",
+  ]);
+  for (const link of errorChain(error)) {
+    if (safeCodes.has(link?.code)) return true;
+  }
+  return false;
 }
 
 export function transportError(error) {
@@ -189,7 +209,23 @@ export function retrySleepMs(attempt, retryAfterSeconds) {
   return Math.min(Math.max(jittered, floor), Math.max(30_000, MAX_RETRY_AFTER_SECONDS * 1000));
 }
 
-export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export const sleep = (ms, signal = null) => new Promise((resolve, reject) => {
+  if (signal?.aborted) {
+    reject(signal.reason);
+    return;
+  }
+  let timer;
+  const onAbort = () => {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onAbort);
+    reject(signal.reason);
+  };
+  timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
+});
 
 // ---- L2: plane router / candidate set ------------------------------------
 
@@ -224,14 +260,36 @@ export function healthyRegionStatus(statusCode) {
  *
  * Mutates ctx.baseUrls so `sdk.baseUrls` stays a live property.
  */
-export async function activeBaseUrls(ctx) {
+export async function activeBaseUrls(ctx, signal = null) {
   if (!ctx.regionAffinityPending) return ctx.baseUrls;
   if (!ctx.regionAffinityPromise) {
     ctx.regionAffinityPromise = rankRegionalBaseUrls(ctx);
   }
-  ctx.baseUrls = await ctx.regionAffinityPromise;
+  ctx.baseUrls = await awaitWithSignal(ctx.regionAffinityPromise, signal);
   ctx.regionAffinityPending = false;
   return ctx.baseUrls;
+}
+
+function awaitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 export async function rankRegionalBaseUrls(ctx) {
@@ -243,7 +301,12 @@ export async function rankRegionalBaseUrls(ctx) {
         const response = await fetchWithTimeout(
           ctx,
           `${baseUrl.replace(/\/v1$/, "")}/health`,
-          { method: "GET", headers: { accept: "application/json" } },
+          {
+            method: "GET",
+            headers: { accept: "application/json" },
+            credentials: "omit",
+            redirect: "manual",
+          },
           ctx.regionProbeTimeout,
         );
         try {
@@ -258,9 +321,9 @@ export async function rankRegionalBaseUrls(ctx) {
       }),
     );
   } catch {
-    return [ctx.baseUrl];
+    return baseUrls(ctx.baseUrl);
   }
-  return [...new Set([winner, ctx.baseUrl, ...candidates])];
+  return [...new Set([winner, ctx.baseUrl, ...candidates, ...baseUrls(ctx.baseUrl)])];
 }
 
 // ---- L4: attempt assembly -------------------------------------------------
@@ -306,6 +369,7 @@ export function buildHeaders(ctx, {
   idempotencyKey,
   apiKey,
   workspaceId,
+  credentialFree = false,
 }) {
   const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
   for (const [k, v] of Object.entries(ctx.defaultHeaders)) out.set(k, v);
@@ -326,6 +390,14 @@ export function buildHeaders(ctx, {
   const bearer = apiKey ?? ctx.apiKey;
   if (bearer && !out.has("authorization")) {
     out.set("authorization", `Bearer ${bearer}`);
+  }
+  if (credentialFree) {
+    out.delete("authorization");
+    out.delete("proxy-authorization");
+    out.delete("cookie");
+    out.delete("idempotency-key");
+    out.delete("x-api-key");
+    out.delete("x-trustedrouter-workspace");
   }
   // x-tr-client is reserved for the engine (client telemetry contract v1).
   // Strip it from every caller source — constructor headers, per-call
@@ -477,10 +549,9 @@ function releaseWhenBodySettles(response, onSettled) {
  * 300k composites against one caller signal held ~590 MB across a forced GC).
  * A caller reusing one signal would pay that per attempt.
  *
- * The timeout keeps its existing scope and shape: it bounds reaching the
- * headers, is cleared once fetch resolves, and still aborts BARE, so an SDK
- * timeout surfaces as an AbortError and is never mistaken for the caller's
- * reason nor recorded as a host fact.
+ * The timer remains armed through the response body. It still aborts BARE, so
+ * an SDK timeout surfaces as an AbortError and is never mistaken for the
+ * caller's reason nor recorded as a host fact.
  */
 export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
   const callerSignal = init.signal ?? null;
@@ -490,38 +561,51 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
     return ctx.fetch(url, init);
   }
   const controller = new AbortController();
-  if (callerSignal === null) {
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await ctx.fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
   const relayAbort = () => controller.abort(callerSignal.reason);
   let released = false;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const release = () => {
     if (released) return;
     released = true;
+    clearTimeout(timer);
     try {
-      callerSignal.removeEventListener("abort", relayAbort);
+      callerSignal?.removeEventListener("abort", relayAbort);
     } catch {
       /* nothing to detach from; never fail a request over teardown */
     }
   };
-  if (callerSignal.aborted) relayAbort();
-  else callerSignal.addEventListener("abort", relayAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (callerSignal?.aborted) relayAbort();
+  else callerSignal?.addEventListener("abort", relayAbort, { once: true });
   let response;
   try {
     response = await ctx.fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
-    clearTimeout(timer);
     release();
     throw error;
   }
-  clearTimeout(timer);
   return releaseWhenBodySettles(response, release);
+}
+
+function operationSignal(callerSignal, timeoutMs) {
+  if (!timeoutMs) {
+    return { signal: callerSignal, ownsSignal: false, release() {} };
+  }
+  const controller = new AbortController();
+  const relayAbort = () => controller.abort(callerSignal.reason);
+  if (callerSignal?.aborted) relayAbort();
+  else callerSignal?.addEventListener("abort", relayAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let released = false;
+  return {
+    signal: controller.signal,
+    ownsSignal: true,
+    release() {
+      if (released) return;
+      released = true;
+      clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", relayAbort);
+    },
+  };
 }
 
 // ---- L3: transport engine ---------------------------------------------
@@ -539,13 +623,14 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
  * Candidates resolve once per logical call: `init._baseUrls` pins the list
  * (the control plane passes `[controlBaseUrl]`, so a length-1 list makes the
  * advance unreachable by construction); otherwise the ranked inference list
- * is used. The idempotency key is minted ONCE before the loop and replayed
- * verbatim on every attempt and every domain.
+ * is used. Any idempotency key supplied by a typed facade or caller is baked
+ * into the immutable logical request before the loop and replayed verbatim.
  */
 export async function performRequest(ctx, method, path, init = {}) {
   const {
     _baseUrls = null,
     _streaming = false,
+    _credentialFree = false,
     headers = {},
     body,
     apiKey = null,
@@ -553,6 +638,9 @@ export async function performRequest(ctx, method, path, init = {}) {
     timeout = null,
     extraHeaders = null,
     workspaceId = null,
+    method: _ignoredMethod,
+    redirect: _ignoredRedirect,
+    signal: callerSignal = null,
     ...rest
   } = init;
 
@@ -567,7 +655,6 @@ export async function performRequest(ctx, method, path, init = {}) {
   // failure that races a late abort is still a true fact about the host, and
   // reclassifying it would hide a real failure and skip the retry. Identity
   // holds through fetchWithTimeout, which relays the reason verbatim.
-  const callerSignal = rest.signal ?? null;
   // Read CAUSALLY down the `cause` chain, the way classifyTransportError
   // reads it (same walker), because the identity is routinely not at the top:
   // a transport that rethrows `new TypeError("...", { cause: signal.reason })`
@@ -607,24 +694,23 @@ export async function performRequest(ctx, method, path, init = {}) {
     isInferenceRequest && ctx.telemetryEnabled === true
       ? new RequestRecorder({ streaming: _streaming === true, now: ctx._telemetryNow })
       : null;
-  const requestIdempotencyKey = idempotencyKey ?? (
-    isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
-      ? newIdempotencyKey()
-      : null
-  );
+  const requestIdempotencyKey = idempotencyKey;
   const requestHeaders = buildHeaders(ctx, {
     headers,
     extraHeaders,
     idempotencyKey: requestIdempotencyKey,
     apiKey,
     workspaceId,
+    credentialFree: _credentialFree,
   });
   const requestBody = serializeBody(body, requestHeaders);
 
-  const candidates = _baseUrls ?? await activeBaseUrls(ctx);
-  let attempt = 0;
-  let baseIndex = 0;
-  while (true) {
+  const operation = operationSignal(callerSignal, timeout);
+  try {
+    const candidates = _baseUrls ?? await activeBaseUrls(ctx, operation.signal);
+    let attempt = 0;
+    let baseIndex = 0;
+    while (true) {
     const url = `${candidates[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
     // The base Headers never carries x-tr-client (buildHeaders strips it);
     // an eligible attempt gets its own clone so a fetch implementation that
@@ -642,17 +728,16 @@ export async function performRequest(ctx, method, path, init = {}) {
     let decision;
     let response = null;
     try {
-      response = await fetchWithTimeout(
-        ctx,
-        url,
-        {
-          method,
-          headers: attemptHeaders,
-          body: requestBody,
-          ...rest,
-        },
-        timeout,
-      );
+      const fetchInit = {
+        ...rest,
+        method,
+        headers: attemptHeaders,
+        body: requestBody,
+        redirect: "manual",
+      };
+      if (operation.signal) fetchInit.signal = operation.signal;
+      if (_credentialFree) fetchInit.credentials = "omit";
+      response = await ctx.fetch(url, fetchInit);
     } catch (error) {
       // A caller cancellation is terminal and is NOT a fact about the host:
       // recording one would put a false po=/pc=/ph= claim on the wire and burn
@@ -664,6 +749,8 @@ export async function performRequest(ctx, method, path, init = {}) {
       recorder?.onTransportError(error);
       if (
         attempt >= ctx.maxRetries ||
+        (!requestIsReplayable(method, requestIdempotencyKey) &&
+          !transportDefinitelyFailedBeforeSend(error)) ||
         !shouldRetryTransport(isInferenceRequest, ctx.regionalFailover)
       ) {
         throw transportError(error);
@@ -674,28 +761,36 @@ export async function performRequest(ctx, method, path, init = {}) {
     }
     if (response !== null) {
       recorder?.onResponse(response.status);
+      const responseRetryable = shouldRetryResponse(
+        response.status,
+        isInferenceRequest,
+        ctx.regionalFailover,
+        response.headers,
+      );
       if (
         attempt >= ctx.maxRetries ||
-        !shouldRetryResponse(
-          response.status,
-          isInferenceRequest,
-          ctx.regionalFailover,
-          response.headers,
-        )
+        !responseRetryable ||
+        (!requestIsReplayable(method, requestIdempotencyKey) &&
+          shouldRetryVerdict(response.headers) !== true)
       ) {
         // Terminal: surface the response UNDRAINED (invariants 6 and 9).
-        return response;
+        return operation.ownsSignal
+          ? releaseWhenBodySettles(response, operation.release)
+          : response;
       }
       decision = {
         move: isRegionalFailoverable(response.status, response.headers),
         retryAfter: parseRetryAfter(response.headers),
       };
-      // Drain ONLY responses already decided retryable, so we don't leak a
-      // connection while sleeping. Success bodies are never drained here.
+      // The diagnostic body is never surfaced. Cancel it rather than waiting
+      // for a broken/stalled 5xx body; the retryable headers already consumed
+      // this attempt, and cancellation releases the connection promptly.
       try {
-        await response.text();
-      } catch {
-        /* ignore */
+        await response.body?.cancel();
+      } catch (error) {
+        if (operation.signal?.aborted) throw operation.signal.reason;
+        // A truncated diagnostic body cannot turn an authorized retry into a
+        // terminal transport error.
       }
     }
     if (
@@ -707,8 +802,12 @@ export async function performRequest(ctx, method, path, init = {}) {
       baseIndex += 1; // THE ONLY candidate advance in the codebase.
       recorder?.onMoved();
     }
-    await sleep(retrySleepMs(attempt, decision.retryAfter));
+    await sleep(retrySleepMs(attempt, decision.retryAfter), operation.signal);
     attempt += 1;
+    }
+  } catch (error) {
+    operation.release();
+    throw error;
   }
 }
 

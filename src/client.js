@@ -127,8 +127,16 @@ export class TrustedRouter {
   }
 
   _controlRequest(method, path, init = {}) {
+    const requestInit = { ...init };
+    if (
+      requestInit._credentialFree !== true &&
+      requestInit.idempotencyKey == null &&
+      !["GET", "HEAD", "OPTIONS", "TRACE"].includes(String(method).toUpperCase())
+    ) {
+      requestInit.idempotencyKey = newIdempotencyKey();
+    }
     return this.request(method, path, {
-      ...init,
+      ...requestInit,
       _baseUrls: [this.controlBaseUrl],
     });
   }
@@ -294,6 +302,11 @@ export class TrustedRouter {
     trace = null,
     tags = null,
     provider = null,
+    apiKey = null,
+    extraHeaders = null,
+    idempotencyKey = null,
+    workspaceId = null,
+    timeout = null,
   }) {
     const body = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
@@ -303,12 +316,34 @@ export class TrustedRouter {
     if (trace !== null) body.trace = trace;
     if (tags !== null) body.tags = tags;
     if (provider !== null) body.provider = provider;
-    return this.request("POST", "/embeddings", { body });
+    return this.request("POST", "/embeddings", {
+      body,
+      apiKey,
+      extraHeaders,
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      workspaceId,
+      timeout,
+    });
   }
 
-  messages({ model, messages, maxTokens = 1024, ...params }) {
+  messages({
+    model,
+    messages,
+    maxTokens = 1024,
+    apiKey = null,
+    extraHeaders = null,
+    idempotencyKey = null,
+    workspaceId = null,
+    timeout = null,
+    ...params
+  }) {
     return this.request("POST", "/messages", {
       body: { model, messages, max_tokens: maxTokens, ...params },
+      apiKey,
+      extraHeaders,
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      workspaceId,
+      timeout,
     });
   }
 
@@ -401,6 +436,7 @@ export class TrustedRouter {
     input,
     instructions = null,
     workspaceId = null,
+    idempotencyKey = null,
     ...params
   } = {}) {
     return this.request("POST", "/responses/input_tokens", {
@@ -412,6 +448,7 @@ export class TrustedRouter {
         params,
       }),
       workspaceId,
+      idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
     });
   }
 
@@ -476,6 +513,8 @@ export class TrustedRouter {
     return jsonOrThrow(
       await this.fetch(url, {
         headers: { "user-agent": DEFAULT_USER_AGENT },
+        credentials: "omit",
+        redirect: "manual",
       }),
     );
   }
@@ -594,6 +633,7 @@ export class TrustedRouter {
     return this._controlRequest("POST", "/auth/keys", {
       body,
       apiKey: "",
+      _credentialFree: true,
       credentials: "omit",
       timeout,
     });
@@ -618,6 +658,8 @@ export class TrustedRouter {
     const url = this.baseUrl.replace(/\/v1$/, "") + "/attestation";
     const response = await this.fetch(url, {
       headers: { "user-agent": DEFAULT_USER_AGENT },
+      credentials: "omit",
+      redirect: "manual",
     });
     if (!response.ok) {
       const text = await response.text().catch(() => "");

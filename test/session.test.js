@@ -458,8 +458,9 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
     assert.equal(sessionA.attestation.certSha256, certSha);
     assert.equal(sessionA.attestation.nonce.length, EXPORTER_LENGTH * 2);
 
-    const secondJwt = await fetchAttestationAgain(sessionA);
-    assert.ok(secondJwt.length > 0);
+    const secondAttestation = await fetchAttestationAgain(sessionA);
+    assert.equal(secondAttestation.certSha256, certSha);
+    assert.equal(secondAttestation.nonce.length, EXPORTER_LENGTH * 2);
     assert.equal(bytesToHex(sessionA.exporter), bytesToHex(serverExporters[1]));
 
     sessionB = await verifyGatewaySession({

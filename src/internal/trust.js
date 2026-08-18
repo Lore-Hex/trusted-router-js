@@ -28,6 +28,8 @@ export async function fetchTrustRelease({
   return jsonOrThrow(
     await fetchImpl(trustUrl, {
       headers: { "user-agent": DEFAULT_USER_AGENT },
+      credentials: "omit",
+      redirect: "manual",
     }),
   );
 }
