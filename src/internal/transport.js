@@ -73,6 +73,7 @@ import {
   REGION_BASE_URLS,
   VERSION,
 } from "./models.js";
+import { RequestRecorder, errorChain } from "./telemetry.js";
 
 // ---- L1: policy kernel (pure, no I/O, no clock) -------------------------
 
@@ -265,12 +266,15 @@ export async function rankRegionalBaseUrls(ctx) {
 // ---- L4: attempt assembly -------------------------------------------------
 
 export function userAgent() {
-  const node =
+  // Exactly the grammar the enclave parses (client telemetry contract v1):
+  // trusted-router-js/SEMVER with an optional runtime/version token. The old
+  // trailing platform word made the whole value unparseable server-side, so
+  // the SDK was invisible in the reliability data.
+  const runtime =
     typeof process !== "undefined" && process.versions?.node
-      ? `node/${process.versions.node}`
-      : "browser";
-  const platform = typeof process !== "undefined" ? process.platform : "web";
-  return `trusted-router-js/${VERSION} ${node} ${platform}`;
+      ? ` node/${process.versions.node}`
+      : "";
+  return `trusted-router-js/${VERSION}${runtime}`;
 }
 
 export const DEFAULT_USER_AGENT = userAgent();
@@ -323,20 +327,201 @@ export function buildHeaders(ctx, {
   if (bearer && !out.has("authorization")) {
     out.set("authorization", `Bearer ${bearer}`);
   }
+  // x-tr-client is reserved for the engine (client telemetry contract v1).
+  // Strip it from every caller source — constructor headers, per-call
+  // headers, extraHeaders — so nothing can ride the reserved name past the
+  // opt-out / custom-host / control-plane suppression rules; performRequest
+  // adds a validated value per eligible attempt.
+  out.delete("x-tr-client");
   return out;
 }
 
+// The Response readers that buffer the whole body. Each one settling means
+// the body is finished, so the caller's cancellation has nothing left to cut.
+const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"];
+
+/**
+ * Re-expose `response.body` as a stream that reports when it settles.
+ *
+ * The source is locked on the first READ, never on construction: on a plain
+ * Response, reading `.body` does not disturb or lock anything, so
+ * `response.body` followed by `response.text()` is legal and must stay legal.
+ * Locking eagerly would have broken that, and every reader in BODY_READERS
+ * with it.
+ */
+function watchedBody(stream, onSettled) {
+  let reader = null;
+  return new ReadableStream({
+    async pull(controller) {
+      try {
+        if (reader === null) reader = stream.getReader();
+        const { done, value } = await reader.read();
+        if (done) {
+          onSettled();
+          controller.close();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        // Includes the caller's abort reason arriving mid-stream, which is
+        // the whole point of keeping the relay alive this long. Also covers a
+        // source already consumed through one of the buffered readers.
+        onSettled();
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      onSettled();
+      return reader === null ? stream.cancel(reason) : reader.cancel(reason);
+    },
+  });
+}
+
+/**
+ * Run `onSettled` once the response body is finished — fully read through any
+ * buffered reader, or read/cancelled/errored through `response.body`.
+ *
+ * Instruments the Response in place rather than rebuilding it, so `url`,
+ * `type`, `redirected` and object identity survive for the caller who
+ * receives it from `rawRequest`. A Response-like that refuses the
+ * instrumentation settles immediately instead of failing the request.
+ *
+ * A `clone()` is deliberately not instrumented: its body is a tee of this
+ * one, and the relay is released when THIS response's body settles.
+ */
+function releaseWhenBodySettles(response, onSettled) {
+  try {
+    const stream = response?.body ?? null;
+    if (stream === null || typeof stream.getReader !== "function") {
+      // 204/HEAD, or a runtime that does not expose the body as a web stream:
+      // there is no post-headers read left to cancel.
+      onSettled();
+      return response;
+    }
+    for (const name of BODY_READERS) {
+      const read = response[name];
+      if (typeof read !== "function") continue;
+      Object.defineProperty(response, name, {
+        configurable: true,
+        writable: true,
+        value(...args) {
+          let pending;
+          try {
+            pending = read.apply(this, args);
+          } catch (error) {
+            onSettled();
+            throw error;
+          }
+          return Promise.resolve(pending).then(
+            (value) => {
+              onSettled();
+              return value;
+            },
+            (error) => {
+              onSettled();
+              throw error;
+            },
+          );
+        },
+      });
+    }
+    let watched = null;
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      get() {
+        // Runs on the caller's stack, outside the try below, so it carries its
+        // own: reading `response.body` must never start throwing.
+        if (watched === null) {
+          try {
+            watched = watchedBody(stream, onSettled);
+          } catch {
+            onSettled();
+            watched = stream;
+          }
+        }
+        return watched;
+      },
+    });
+  } catch {
+    onSettled();
+  }
+  return response;
+}
+
+/**
+ * One fetch under BOTH deadlines — the caller's `signal` and the SDK's
+ * `timeout` — with the caller's cancellation reaching the RESPONSE BODY, not
+ * merely the fetch call.
+ *
+ * The timeout controller must not REPLACE init.signal (that silently dropped
+ * the caller's cancellation for the documented `signal` + `timeout`
+ * combination), so the caller's abort is relayed into it with its REASON
+ * forwarded verbatim — which is also what keeps the rejection identity-equal
+ * to `callerSignal.reason` for the engine's cancellation check below.
+ *
+ * LIFETIME. `fetch` resolves as soon as the response HEADERS arrive; the body
+ * is read afterwards, by `jsonOrThrow` for buffered calls and by the SSE codec
+ * for streaming ones. Releasing the relay when the fetch promise settled left
+ * a cancellation raised during the body read with nothing listening: the
+ * request ran to completion and returned its payload with the caller's signal
+ * already aborted. So the relay is tied to the BODY — released when the body
+ * settles, when there is no body, or when the fetch itself rejects — and
+ * `{ once: true }` plus an idempotent release means neither a retry, a
+ * cancellation, nor an early failure can leave a listener on a caller signal
+ * that outlives the call. (Real undici keeps its own abort listener until
+ * end-of-body, so the abort does cut a streaming body once it is delivered.)
+ *
+ * `AbortSignal.any` expresses this composition natively but is not usable
+ * here: on Node 20 — the floor in `engines` — a source signal retains every
+ * dependent signal ever composed from it, with no way to detach one (measured:
+ * 300k composites against one caller signal held ~590 MB across a forced GC).
+ * A caller reusing one signal would pay that per attempt.
+ *
+ * The timeout keeps its existing scope and shape: it bounds reaching the
+ * headers, is cleared once fetch resolves, and still aborts BARE, so an SDK
+ * timeout surfaces as an AbortError and is never mistaken for the caller's
+ * reason nor recorded as a host fact.
+ */
 export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
+  const callerSignal = init.signal ?? null;
   if (!timeoutMs) {
+    // No SDK deadline: the caller's signal goes to fetch untouched and already
+    // covers the body read.
     return ctx.fetch(url, init);
   }
   const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await ctx.fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(id);
+  if (callerSignal === null) {
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await ctx.fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  const relayAbort = () => controller.abort(callerSignal.reason);
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    try {
+      callerSignal.removeEventListener("abort", relayAbort);
+    } catch {
+      /* nothing to detach from; never fail a request over teardown */
+    }
+  };
+  if (callerSignal.aborted) relayAbort();
+  else callerSignal.addEventListener("abort", relayAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await ctx.fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    clearTimeout(timer);
+    release();
+    throw error;
+  }
+  clearTimeout(timer);
+  return releaseWhenBodySettles(response, release);
 }
 
 // ---- L3: transport engine ---------------------------------------------
@@ -360,6 +545,7 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
 export async function performRequest(ctx, method, path, init = {}) {
   const {
     _baseUrls = null,
+    _streaming = false,
     headers = {},
     body,
     apiKey = null,
@@ -371,6 +557,56 @@ export async function performRequest(ctx, method, path, init = {}) {
   } = init;
 
   const isInferenceRequest = _baseUrls === null;
+  // Is this rejection the caller cancelling, rather than a fact about the
+  // host? Decided CAUSALLY, not by the signal's state at catch time: the
+  // rejection must BE the caller's abort reason. `error.name` alone cannot
+  // tell — only a bare `controller.abort()` yields an AbortError, while
+  // `AbortSignal.timeout()` rejects with a TimeoutError and
+  // `controller.abort(reason)` with the caller's own object — but a mere
+  // `signal.aborted` test is too coarse in the other direction: a genuine host
+  // failure that races a late abort is still a true fact about the host, and
+  // reclassifying it would hide a real failure and skip the retry. Identity
+  // holds through fetchWithTimeout, which relays the reason verbatim.
+  const callerSignal = rest.signal ?? null;
+  // Read CAUSALLY down the `cause` chain, the way classifyTransportError
+  // reads it (same walker), because the identity is routinely not at the top:
+  // a transport that rethrows `new TypeError("...", { cause: signal.reason })`
+  // — the shape Node's own fetch uses for every failure it reports — was
+  // taken for a host failure, so the client's own cancellation was RETRIED
+  // and written to the wire as po=transport_error;ph=... against two
+  // TrustedRouter hosts, corrupting the reliability signal this channel
+  // exists to collect. Returns the error to surface, or null for "not a
+  // cancellation"; never throws, so a hostile `cause` getter cannot fail a
+  // request.
+  const callerCancellation = (error) => {
+    try {
+      for (const link of errorChain(error)) {
+        if (
+          callerSignal !== null &&
+          callerSignal.aborted === true &&
+          link === callerSignal.reason
+        ) {
+          // The caller's reason propagates unwrapped, whatever wrapped it.
+          return { error: callerSignal.reason };
+        }
+        // A bare `controller.abort()` and the SDK's own timeout both land
+        // here; neither carries a reason to unwrap, so the throw stands.
+        if (link?.name === "AbortError") return { error };
+      }
+    } catch {
+      /* an unreadable chain is not a cancellation */
+    }
+    return null;
+  };
+  // Telemetry header channel (contract v1): ONE recorder per logical call,
+  // engine-owned, so this loop stays the single emit point. Control-plane
+  // calls (pinned _baseUrls) and opted-out clients never construct one; a
+  // custom current host makes headerValue() return null. The recorder's
+  // methods swallow their own failures — telemetry never fails a request.
+  const recorder =
+    isInferenceRequest && ctx.telemetryEnabled === true
+      ? new RequestRecorder({ streaming: _streaming === true, now: ctx._telemetryNow })
+      : null;
   const requestIdempotencyKey = idempotencyKey ?? (
     isInferenceRequest && !["GET", "HEAD", "OPTIONS"].includes(String(method).toUpperCase())
       ? newIdempotencyKey()
@@ -390,6 +626,16 @@ export async function performRequest(ctx, method, path, init = {}) {
   let baseIndex = 0;
   while (true) {
     const url = `${candidates[baseIndex]}/${String(path).replace(/^\/+/, "")}`;
+    // The base Headers never carries x-tr-client (buildHeaders strips it);
+    // an eligible attempt gets its own clone so a fetch implementation that
+    // retains a previous attempt's headers never sees them mutate.
+    let attemptHeaders = requestHeaders;
+    if (recorder) {
+      recorder.beginAttempt(candidates[baseIndex]);
+      const clientHeader = recorder.headerValue();
+      attemptHeaders = new Headers(requestHeaders);
+      if (clientHeader) attemptHeaders.set("x-tr-client", clientHeader);
+    }
     // ONE decision point per attempt. `decision.move` asks the policy kernel
     // whether the retry MAY change host; the shared tail below is the only
     // place that actually advances.
@@ -401,14 +647,21 @@ export async function performRequest(ctx, method, path, init = {}) {
         url,
         {
           method,
-          headers: requestHeaders,
+          headers: attemptHeaders,
           body: requestBody,
           ...rest,
         },
         timeout,
       );
     } catch (error) {
-      if (error?.name === "AbortError") throw error;
+      // A caller cancellation is terminal and is NOT a fact about the host:
+      // recording one would put a false po=/pc=/ph= claim on the wire and burn
+      // a failover candidate on a retry the dead signal must fail.
+      const cancelled = callerCancellation(error);
+      if (cancelled !== null) throw cancelled.error;
+      // Record with the live error object BEFORE transportError() flattens
+      // the failure to a message string — after that only the string is left.
+      recorder?.onTransportError(error);
       if (
         attempt >= ctx.maxRetries ||
         !shouldRetryTransport(isInferenceRequest, ctx.regionalFailover)
@@ -420,6 +673,7 @@ export async function performRequest(ctx, method, path, init = {}) {
       decision = { move: true, retryAfter: null };
     }
     if (response !== null) {
+      recorder?.onResponse(response.status);
       if (
         attempt >= ctx.maxRetries ||
         !shouldRetryResponse(
@@ -451,6 +705,7 @@ export async function performRequest(ctx, method, path, init = {}) {
       baseIndex < candidates.length - 1
     ) {
       baseIndex += 1; // THE ONLY candidate advance in the codebase.
+      recorder?.onMoved();
     }
     await sleep(retrySleepMs(attempt, decision.retryAfter));
     attempt += 1;
@@ -464,5 +719,5 @@ export async function requestJson(ctx, method, path, init = {}) {
 
 /** Streaming-open mode: hand back the terminal Response undrained. */
 export async function requestStream(ctx, method, path, init = {}) {
-  return performRequest(ctx, method, path, init);
+  return performRequest(ctx, method, path, { ...init, _streaming: true });
 }

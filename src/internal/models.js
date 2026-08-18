@@ -6,10 +6,11 @@
  * (test/parity-contract.test.js, test/fusion.test.js) and must not change.
  */
 
-// NOTE: VERSION intentionally reads "0.4.0" while package.json pins 0.5.0.
-// It feeds the User-Agent string; the mismatch predates this refactor and is
-// left as-is pending a deliberate version bump (flagged in the PR).
-export const VERSION = "0.4.0";
+// Feeds the User-Agent string. package.json is the single source of truth;
+// test/parity-contract.test.js pins this constant to it so they cannot drift
+// again (a runtime read of package.json would drag Node built-ins into the
+// browser-safe root import, so the test is the enforcement point).
+export const VERSION = "0.5.0";
 export const DEFAULT_API_BASE_URL = "https://api.trustedrouter.com/v1";
 export const DEFAULT_CONTROL_BASE_URL = "https://trustedrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =

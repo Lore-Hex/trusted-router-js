@@ -67,18 +67,28 @@ test("a pinned client still retries in place", async () => {
   const seen = [];
   let calls = 0;
   const sdk = clientWithFetch(
-    async (url) => {
-      seen.push(new URL(url).host);
+    async (url, init) => {
+      seen.push({ host: new URL(url).host, header: init.headers.get("x-tr-client") });
       calls += 1;
       if (calls === 1) return json({ error: "draining" }, 503);
       return json({ ok: true }, 200);
     },
-    { regionalFailover: false },
+    { regionalFailover: false, telemetry: true },
   );
 
   assert.deepEqual(await sdk.request("GET", "/models"), { ok: true });
   assert.equal(calls, 2, "a pinned client should still retry a 503");
-  assert.deepEqual([...new Set(seen)], ["api.trustedrouter.com"], "but must not move host");
+  assert.deepEqual(
+    [...new Set(seen.map(({ host }) => host))],
+    ["api.trustedrouter.com"],
+    "but must not move host",
+  );
+  // The retry's telemetry header says the same: previous attempt was an
+  // http_error on the apex and the candidate index never advanced (fo=0).
+  assert.match(
+    seen[1].header,
+    /^v=1;a=1;po=http_error;pc=none;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=0$/,
+  );
 });
 
 test("retry-after-ms is honored and beats retry-after", async () => {

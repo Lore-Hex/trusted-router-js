@@ -8,8 +8,8 @@ import { ALIAS_API_BASE_URLS, DEFAULT_API_BASE_URL, TrustedRouter } from "../src
 // it could not do before, because the candidate list had a single entry and
 // every advance is guarded by `baseIndex < requestBaseUrls.length - 1`.
 
-function clientWithFetch(fetchImpl) {
-  return new TrustedRouter({ apiKey: "sk-test", fetchImpl, maxRetries: 3 });
+function clientWithFetch(fetchImpl, options = {}) {
+  return new TrustedRouter({ apiKey: "sk-test", fetchImpl, maxRetries: 3, ...options });
 }
 
 test("the default candidate list has more than one entry", () => {
@@ -50,9 +50,9 @@ test("a dead primary domain reaches an alias", async () => {
 
 test("a 503 from the primary reaches an alias", async () => {
   const seen = [];
-  const sdk = clientWithFetch(async (url) => {
+  const sdk = clientWithFetch(async (url, init) => {
     const host = new URL(url).host;
-    seen.push(host);
+    seen.push({ host, clientHeader: init.headers.get("x-tr-client") });
     if (host === "api.trustedrouter.com") {
       return new Response(JSON.stringify({ error: "down" }), {
         status: 503,
@@ -63,10 +63,20 @@ test("a 503 from the primary reaches an alias", async () => {
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  });
+  }, { telemetry: true });
 
   assert.deepEqual(await sdk.request("GET", "/models"), { ok: true });
-  assert.ok(seen.includes("api.allyrouter.com"), `never reached an alias: ${seen}`);
+  const hosts = seen.map(({ host }) => host);
+  assert.ok(hosts.includes("api.allyrouter.com"), `never reached an alias: ${hosts}`);
+  // The telemetry header channel must describe the move: the alias attempt
+  // says what happened on the apex and that the candidate index advanced.
+  assert.equal(seen[0].clientHeader, "v=1;a=0;s=0");
+  const alias = seen.find(({ host }) => host === "api.allyrouter.com");
+  assert.match(
+    alias.clientHeader,
+    /^v=1;a=1;po=http_error;pc=none;ph=apex;pm=\d{1,7};sm=\d{1,7};s=0;fo=1$/,
+  );
+  assert.ok(alias.clientHeader.length <= 160);
 });
 
 test("a 500 does NOT move to another domain", async () => {
@@ -75,14 +85,24 @@ test("a 500 does NOT move to another domain", async () => {
   // per Idempotency-Key, settlement is exactly-once) but the work would run
   // again, costing TrustedRouter a second upstream generation.
   const seen = [];
-  const sdk = clientWithFetch(async (url) => {
-    seen.push(new URL(url).host);
+  const sdk = clientWithFetch(async (url, init) => {
+    seen.push({ host: new URL(url).host, header: init.headers.get("x-tr-client") });
     return new Response(JSON.stringify({ error: "boom" }), {
       status: 500,
       headers: { "content-type": "application/json" },
     });
-  });
+  }, { telemetry: true });
 
   await assert.rejects(() => sdk.request("GET", "/models"));
-  assert.deepEqual([...new Set(seen)], ["api.trustedrouter.com"], `leaked: ${seen}`);
+  const hosts = seen.map(({ host }) => host);
+  assert.deepEqual([...new Set(hosts)], ["api.trustedrouter.com"], `leaked: ${hosts}`);
+  // Every in-place retry says so on the wire: previous attempt http_error
+  // on the apex, candidate index never advanced (fo=0).
+  assert.equal(seen[0].header, "v=1;a=0;s=0");
+  seen.slice(1).forEach(({ header }, index) => {
+    assert.match(
+      header,
+      new RegExp(`^v=1;a=${index + 1};po=http_error;pc=none;ph=apex;pm=\\d{1,7};sm=\\d{1,7};s=0;fo=0$`),
+    );
+  });
 });
