@@ -10,7 +10,7 @@
 // test/parity-contract.test.js pins this constant to it so they cannot drift
 // again (a runtime read of package.json would drag Node built-ins into the
 // browser-safe root import, so the test is the enforcement point).
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 export const DEFAULT_API_BASE_URL = "https://api.trustedrouter.com/v1";
 export const DEFAULT_CONTROL_BASE_URL = "https://trustedrouter.com/v1";
 export const DEFAULT_TRUST_RELEASE_URL =
