@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 — 2026-08-22
+
+- Added the `/v1/client-events` beacon channel (client telemetry contract v1
+  §4, §5, §6.2–§6.4), completing the telemetry work begun in 0.6.0. A
+  `TelemetryReporter` batches sampled request events and exact per-minute
+  counters and posts them with its **own** `fetch` — never the engine's and
+  never a caller-supplied `fetchImpl` — using `credentials: "omit"` and
+  `redirect: "manual"`. Buffers are bounded and drop the oldest success
+  first; counter keys fold (error class, then endpoint, then an existing key)
+  rather than growing without limit; batches are trimmed to the byte cap.
+  The server's response governs the client: a volume-reducing policy is
+  honoured, 400/401/403/404/410 disables the reporter for the process, 413
+  drops the batch, and backoff runs 60 s to 10 min honouring `Retry-After`.
+  New client option `telemetrySampleRate` (default 0.01) and `close()` for a
+  bounded final flush; `TRUSTEDROUTER_TELEMETRY_DEBUG=1` echoes each batch.
+- The opt-out precedence from 0.6.0 governs both channels unchanged, prompt
+  and completion content is never recorded, and telemetry can never fail a
+  request. Still zero dependencies and zero devDependencies.
+
 ## 0.6.0 — 2026-08-21
 
 - Added the `x-tr-client` header channel (client telemetry contract v1). On
