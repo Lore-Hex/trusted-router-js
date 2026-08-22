@@ -5,6 +5,7 @@ import test from "node:test";
 import { DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
 import { iterSseChunks } from "../src/internal/sse.js";
 import {
+  RecordingSink,
   RequestRecorder,
   classifyTransportError,
   hostEnum,
@@ -51,8 +52,18 @@ function sseResponse() {
   );
 }
 
+// An in-memory sink keeps these header tests hermetic: without one, the
+// beacon reporter would be created on the first inference call and its own
+// fetch would reach the real control plane at exit. The beacon has its own
+// suites (test/telemetry-beacon.test.js, test/telemetry-record.test.js).
 function clientWithFetch(fetchImpl, options = {}) {
-  return new TrustedRouter({ apiKey: "sk-test", fetchImpl, maxRetries: 3, ...options });
+  return new TrustedRouter({
+    apiKey: "sk-test",
+    fetchImpl,
+    maxRetries: 3,
+    _telemetrySink: new RecordingSink(),
+    ...options,
+  });
 }
 
 function assertHeaderGrammar(header) {
@@ -345,6 +356,7 @@ test("a custom base URL never carries x-tr-client, even when telemetry is forced
       return okJson();
     },
     telemetry: true,
+    _telemetrySink: new RecordingSink(),
   });
   await sdk.request("POST", "/embeddings", { body: { model: "m", input: "x" } });
   assert.deepEqual(captured, [false]);

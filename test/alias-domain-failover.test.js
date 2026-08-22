@@ -2,14 +2,23 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ALIAS_API_BASE_URLS, DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
+import { RecordingSink } from "../src/internal/telemetry.js";
 
 // The domain is a single point of failure above the whole deployment. These
 // prove a client reaches a second domain when the first stops answering — which
 // it could not do before, because the candidate list had a single entry and
 // every advance is guarded by `baseIndex < requestBaseUrls.length - 1`.
 
+// The in-memory telemetry sink keeps these tests hermetic (no beacon
+// reporter, whose own fetch would otherwise reach the control plane at exit).
 function clientWithFetch(fetchImpl, options = {}) {
-  return new TrustedRouter({ apiKey: "sk-test", fetchImpl, maxRetries: 3, ...options });
+  return new TrustedRouter({
+    apiKey: "sk-test",
+    fetchImpl,
+    maxRetries: 3,
+    _telemetrySink: new RecordingSink(),
+    ...options,
+  });
 }
 
 test("the default candidate list has more than one entry", () => {

@@ -7,6 +7,12 @@ import {
 } from "../src/index.js";
 import { BrowserOAuthError, BrowserOAuthFlow } from "../src/oauth.js";
 
+// Not about telemetry: keep this file hermetic. Without the opt-out, the
+// default-on beacon reporter would be created on the first inference call
+// and its own fetch would reach the real control plane at process exit.
+// The telemetry suites inject sinks and fake beacon endpoints instead.
+process.env.TRUSTEDROUTER_TELEMETRY = "0";
+
 const CALLBACK_URL = "https://app.example/auth/callback";
 
 function fakeStorage() {

@@ -73,7 +73,12 @@ import {
   REGION_BASE_URLS,
   VERSION,
 } from "./models.js";
-import { RequestRecorder, errorChain } from "./telemetry.js";
+import {
+  RequestRecorder,
+  attachRecorder,
+  endpointEnum,
+  errorChain,
+} from "./telemetry.js";
 
 // ---- L1: policy kernel (pure, no I/O, no clock) -------------------------
 
@@ -421,37 +426,47 @@ const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"
  * Locking eagerly would have broken that, and every reader in BODY_READERS
  * with it.
  */
-function watchedBody(stream, onSettled) {
+function watchedBody(stream, onSettled, onBodyStarted) {
   let reader = null;
+  let started = false;
   return new ReadableStream({
     async pull(controller) {
       try {
         if (reader === null) reader = stream.getReader();
         const { done, value } = await reader.read();
         if (done) {
-          onSettled();
+          onSettled("done");
           controller.close();
           return;
+        }
+        if (!started && onBodyStarted && (value?.byteLength ?? value?.length ?? 0) > 0) {
+          // The first body bytes reached the consumer: from here on a
+          // transport failure is a broken stream, not a failed request.
+          started = true;
+          onBodyStarted();
         }
         controller.enqueue(value);
       } catch (error) {
         // Includes the caller's abort reason arriving mid-stream, which is
         // the whole point of keeping the relay alive this long. Also covers a
         // source already consumed through one of the buffered readers.
-        onSettled();
+        onSettled("error", error);
         controller.error(error);
       }
     },
     cancel(reason) {
-      onSettled();
+      onSettled("cancel", reason);
       return reader === null ? stream.cancel(reason) : reader.cancel(reason);
     },
-  });
+  }, { highWaterMark: 0 });
 }
 
 /**
- * Run `onSettled` once the response body is finished — fully read through any
- * buffered reader, or read/cancelled/errored through `response.body`.
+ * Run `onSettled(kind, error)` once the response body is finished — fully
+ * read through any buffered reader ("done"), or read ("done"), cancelled
+ * ("cancel") or errored ("error") through `response.body`. `onBodyStarted`,
+ * when given, fires once when the first body bytes pass through
+ * `response.body` (the telemetry recorder's stream_broken boundary).
  *
  * Instruments the Response in place rather than rebuilding it, so `url`,
  * `type`, `redirected` and object identity survive for the caller who
@@ -461,13 +476,13 @@ function watchedBody(stream, onSettled) {
  * A `clone()` is deliberately not instrumented: its body is a tee of this
  * one, and the relay is released when THIS response's body settles.
  */
-function releaseWhenBodySettles(response, onSettled) {
+function releaseWhenBodySettles(response, onSettled, onBodyStarted = null) {
   try {
     const stream = response?.body ?? null;
     if (stream === null || typeof stream.getReader !== "function") {
       // 204/HEAD, or a runtime that does not expose the body as a web stream:
       // there is no post-headers read left to cancel.
-      onSettled();
+      onSettled("done");
       return response;
     }
     for (const name of BODY_READERS) {
@@ -481,16 +496,16 @@ function releaseWhenBodySettles(response, onSettled) {
           try {
             pending = read.apply(this, args);
           } catch (error) {
-            onSettled();
+            onSettled("error", error);
             throw error;
           }
           return Promise.resolve(pending).then(
             (value) => {
-              onSettled();
+              onSettled("done");
               return value;
             },
             (error) => {
-              onSettled();
+              onSettled("error", error);
               throw error;
             },
           );
@@ -505,9 +520,9 @@ function releaseWhenBodySettles(response, onSettled) {
         // own: reading `response.body` must never start throwing.
         if (watched === null) {
           try {
-            watched = watchedBody(stream, onSettled);
+            watched = watchedBody(stream, onSettled, onBodyStarted);
           } catch {
-            onSettled();
+            onSettled("done");
             watched = stream;
           }
         }
@@ -515,7 +530,7 @@ function releaseWhenBodySettles(response, onSettled) {
       },
     });
   } catch {
-    onSettled();
+    onSettled("done");
   }
   return response;
 }
@@ -588,17 +603,20 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
 
 function operationSignal(callerSignal, timeoutMs) {
   if (!timeoutMs) {
-    return { signal: callerSignal, ownsSignal: false, release() {} };
+    return { signal: callerSignal, ownsSignal: false, timedOut: false, release() {} };
   }
   const controller = new AbortController();
   const relayAbort = () => controller.abort(callerSignal.reason);
   if (callerSignal?.aborted) relayAbort();
   else callerSignal?.addEventListener("abort", relayAbort, { once: true });
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let released = false;
-  return {
+  const operation = {
     signal: controller.signal,
     ownsSignal: true,
+    // Set when the SDK's own deadline fired — the only way to tell its bare
+    // AbortError from a caller's bare `controller.abort()` once both have
+    // been relayed through this controller.
+    timedOut: false,
     release() {
       if (released) return;
       released = true;
@@ -606,6 +624,51 @@ function operationSignal(callerSignal, timeoutMs) {
       callerSignal?.removeEventListener("abort", relayAbort);
     },
   };
+  const timer = setTimeout(() => {
+    operation.timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  return operation;
+}
+
+// ---- telemetry facts the engine derives from the logical request ----------
+
+/** The `model` a JSON body pins, for the beacon event (never any other field). */
+function bodyModel(body) {
+  return body !== null &&
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    typeof body.model === "string"
+    ? body.model
+    : null;
+}
+
+/** §5.3 provider_pinned: the request forbade provider fallbacks. */
+function bodyProviderPinned(body) {
+  const provider =
+    body !== null && typeof body === "object" && !Array.isArray(body) ? body.provider : null;
+  return Boolean(
+    provider !== null &&
+      typeof provider === "object" &&
+      !Array.isArray(provider) &&
+      provider.allow_fallbacks === false,
+  );
+}
+
+/**
+ * The beacon sink for this client — created lazily by the facade on the
+ * first inference call (client.js `_telemetrySinkOrStart`), never by this
+ * engine, and never reached through ctx.fetch. A ctx without one records
+ * the header channel only.
+ */
+function telemetrySink(ctx) {
+  try {
+    return typeof ctx._telemetrySinkOrStart === "function"
+      ? ctx._telemetrySinkOrStart() ?? null
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 // ---- L3: transport engine ---------------------------------------------
@@ -618,7 +681,9 @@ function operationSignal(callerSignal, timeoutMs) {
  *
  * ctx is the TrustedRouter instance (or any object with fetch, maxRetries,
  * regionalFailover, defaultHeaders, apiKey, workspaceId, baseUrl, baseUrls,
- * regionAffinityPending/Promise, regionProbeTimeout).
+ * regionAffinityPending/Promise, regionProbeTimeout, telemetryEnabled, and
+ * optionally `_telemetrySinkOrStart()` for the beacon sink and
+ * `_telemetryNow()` as the recorder clock).
  *
  * Candidates resolve once per logical call: `init._baseUrls` pins the list
  * (the control plane passes `[controlBaseUrl]`, so a length-1 list makes the
@@ -674,25 +739,36 @@ export async function performRequest(ctx, method, path, init = {}) {
           link === callerSignal.reason
         ) {
           // The caller's reason propagates unwrapped, whatever wrapped it.
-          return { error: callerSignal.reason };
+          return { error: callerSignal.reason, caller: true };
         }
         // A bare `controller.abort()` and the SDK's own timeout both land
         // here; neither carries a reason to unwrap, so the throw stands.
-        if (link?.name === "AbortError") return { error };
+        if (link?.name === "AbortError") return { error, caller: false };
       }
     } catch {
       /* an unreadable chain is not a cancellation */
     }
     return null;
   };
-  // Telemetry header channel (contract v1): ONE recorder per logical call,
-  // engine-owned, so this loop stays the single emit point. Control-plane
-  // calls (pinned _baseUrls) and opted-out clients never construct one; a
-  // custom current host makes headerValue() return null. The recorder's
-  // methods swallow their own failures — telemetry never fails a request.
+  // Telemetry (contract v1): ONE recorder per logical call, engine-owned, so
+  // this loop stays the single emit point for BOTH channels — the
+  // per-attempt x-tr-client header and the finished record (event + exact
+  // counters) handed to the beacon sink. Control-plane calls (pinned
+  // _baseUrls) and opted-out clients never construct one; a custom current
+  // host makes headerValue() return null. The recorder's methods swallow
+  // their own failures — telemetry never fails a request.
   const recorder =
     isInferenceRequest && ctx.telemetryEnabled === true
-      ? new RequestRecorder({ streaming: _streaming === true, now: ctx._telemetryNow })
+      ? new RequestRecorder({
+          sink: telemetrySink(ctx),
+          endpoint: endpointEnum(path),
+          method,
+          streaming: _streaming === true,
+          providerPinned: bodyProviderPinned(body),
+          model: bodyModel(body),
+          configuredTimeoutMs: timeout,
+          now: ctx._telemetryNow,
+        })
       : null;
   const requestIdempotencyKey = idempotencyKey;
   const requestHeaders = buildHeaders(ctx, {
@@ -706,6 +782,73 @@ export async function performRequest(ctx, method, path, init = {}) {
   const requestBody = serializeBody(body, requestHeaders);
 
   const operation = operationSignal(callerSignal, timeout);
+  // §5.3 `exhausted`: retries were spent and the last one still failed.
+  // Mirrors the Python drivers exactly — false when the request was never
+  // replayable, when the terminal response is not retryable, or when this
+  // was the only attempt.
+  let exhausted = false;
+  // How a rejection ends the logical call, for the record: the caller's own
+  // cancellation ("caller"), the SDK `timeout` deadline ("deadline"), some
+  // other bare abort ("abort"), or not a cancellation at all (null).
+  const cancellationKind = (error) => {
+    const cancelled = callerCancellation(error);
+    if (cancelled === null) return null;
+    if (cancelled.caller) return "caller";
+    return operation.timedOut ? "deadline" : "abort";
+  };
+  const recordCancellation = (kind) => {
+    if (kind === "deadline") recorder.onDeadline();
+    else recorder.onAborted();
+  };
+  // The terminal Response: instrumented so the relay is released AND the
+  // record is finished when the BODY settles — that is when total_ms, a
+  // broken stream, a consumer that stopped reading, or a deadline reached
+  // mid-body become known. Plain passthrough when neither is in play.
+  const terminal = (response) => {
+    if (!operation.ownsSignal && recorder === null) return response;
+    let settled = false;
+    let decoderActive = false;
+    let pendingSettlement = null;
+    const settleNow = (kind, error) => {
+      if (settled) return;
+      settled = true;
+      operation.release();
+      if (recorder === null) return;
+      if (kind === "error") {
+        const cancelKind = cancellationKind(error);
+        if (cancelKind !== null) recordCancellation(cancelKind);
+        else recorder.onTransportError(error, { responseOpened: true });
+      } else if (kind === "cancel") {
+        recorder.onAborted();
+      }
+      recorder.finish({ exhausted });
+    };
+    const streamLifecycle = {
+      begin() {
+        if (!settled) decoderActive = true;
+      },
+      end() {
+        decoderActive = false;
+        if (pendingSettlement !== null) {
+          const [kind, error] = pendingSettlement;
+          pendingSettlement = null;
+          settleNow(kind, error);
+        }
+      },
+      settle(kind, error) {
+        if (settled) return;
+        if (decoderActive) pendingSettlement = [kind, error];
+        else settleNow(kind, error);
+      },
+    };
+    const instrumented = releaseWhenBodySettles(
+      response,
+      (kind, error) => streamLifecycle.settle(kind, error),
+      recorder === null ? null : () => recorder.onBodyStarted(),
+    );
+    if (recorder !== null) attachRecorder(instrumented, recorder, streamLifecycle);
+    return instrumented;
+  };
   try {
     const candidates = _baseUrls ?? await activeBaseUrls(ctx, operation.signal);
     let attempt = 0;
@@ -747,12 +890,17 @@ export async function performRequest(ctx, method, path, init = {}) {
       // Record with the live error object BEFORE transportError() flattens
       // the failure to a message string — after that only the string is left.
       recorder?.onTransportError(error);
+      const replayable =
+        requestIsReplayable(method, requestIdempotencyKey) ||
+        transportDefinitelyFailedBeforeSend(error);
       if (
         attempt >= ctx.maxRetries ||
-        (!requestIsReplayable(method, requestIdempotencyKey) &&
-          !transportDefinitelyFailedBeforeSend(error)) ||
+        !replayable ||
         !shouldRetryTransport(isInferenceRequest, ctx.regionalFailover)
       ) {
+        // A non-replayable failure is surfaced, not exhausted (py raises
+        // before consulting its retry budget there).
+        exhausted = replayable && attempt > 0;
         throw transportError(error);
       }
       // No server saw the request, so re-sending is always safe and moving
@@ -760,23 +908,22 @@ export async function performRequest(ctx, method, path, init = {}) {
       decision = { move: true, retryAfter: null };
     }
     if (response !== null) {
-      recorder?.onResponse(response.status);
+      recorder?.onResponse(response.status, response.headers, parseRetryAfter(response.headers));
       const responseRetryable = shouldRetryResponse(
         response.status,
         isInferenceRequest,
         ctx.regionalFailover,
         response.headers,
       );
-      if (
-        attempt >= ctx.maxRetries ||
-        !responseRetryable ||
-        (!requestIsReplayable(method, requestIdempotencyKey) &&
-          shouldRetryVerdict(response.headers) !== true)
-      ) {
+      const retrySafe =
+        requestIsReplayable(method, requestIdempotencyKey) ||
+        shouldRetryVerdict(response.headers) === true;
+      if (attempt >= ctx.maxRetries || !responseRetryable || !retrySafe) {
+        // A retryable status that is not safe to replay is surfaced as-is
+        // (py returns before consulting its retry budget there).
+        exhausted = responseRetryable && retrySafe && attempt > 0;
         // Terminal: surface the response UNDRAINED (invariants 6 and 9).
-        return operation.ownsSignal
-          ? releaseWhenBodySettles(response, operation.release)
-          : response;
+        return terminal(response);
       }
       decision = {
         move: isRegionalFailoverable(response.status, response.headers),
@@ -807,6 +954,11 @@ export async function performRequest(ctx, method, path, init = {}) {
     }
   } catch (error) {
     operation.release();
+    if (recorder !== null) {
+      const kind = cancellationKind(error);
+      if (kind !== null) recordCancellation(kind);
+      recorder.finish({ exhausted });
+    }
     throw error;
   }
 }

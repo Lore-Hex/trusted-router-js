@@ -8,6 +8,12 @@ import {
   collectCompletion,
 } from "../src/index.js";
 
+// Not about telemetry: keep this file hermetic. Without the opt-out, the
+// default-on beacon reporter would be created on the first inference call
+// and its own fetch would reach the real control plane at process exit.
+// The telemetry suites inject sinks and fake beacon endpoints instead.
+process.env.TRUSTEDROUTER_TELEMETRY = "0";
+
 function jsonResponse(status, body, headers = {}) {
   return new Response(JSON.stringify(body), {
     status,

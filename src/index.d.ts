@@ -35,6 +35,8 @@ export declare const TELEMETRY_ENDPOINTS: ReadonlyArray<string>;
 export declare const TELEMETRY_OUTCOMES: ReadonlyArray<string>;
 export declare const TELEMETRY_FINAL_OUTCOMES: ReadonlyArray<string>;
 export declare const TELEMETRY_ERROR_CLASSES: ReadonlyArray<string>;
+export declare const TELEMETRY_TIMEOUT_PHASES: ReadonlyArray<string>;
+export declare const TELEMETRY_LATENCY_BUCKETS: ReadonlyArray<string>;
 
 export declare function resolveTelemetryEnabled(
   explicit: boolean | null | undefined,
@@ -212,12 +214,22 @@ export interface TrustedRouterOptions {
   /** Per-region health-probe timeout in milliseconds. Default: 1500. */
   regionProbeTimeout?: number;
   /**
-   * Send the content-free x-tr-client reliability header on inference
-   * attempts (client telemetry contract v1). Default: resolved from
-   * TRUSTEDROUTER_TELEMETRY, then DO_NOT_TRACK, then on only for known
-   * TrustedRouter base and control hosts.
+   * Content-free client reliability telemetry (client telemetry contract
+   * v1): the per-attempt x-tr-client header on inference attempts AND the
+   * beacon channel — bounded batches of closed-enum events and exact
+   * per-minute counters POSTed to `{controlBaseUrl}/client-events` by a
+   * background worker that never keeps the process alive. Default: resolved
+   * from TRUSTEDROUTER_TELEMETRY, then DO_NOT_TRACK, then on only for known
+   * TrustedRouter base and control hosts. Opting out disables both channels.
+   * Set TRUSTEDROUTER_TELEMETRY_DEBUG=1 to echo every batch to stderr.
    */
   telemetry?: boolean | null;
+  /**
+   * Fraction (0..1) of healthy, fast, first-attempt calls the beacon samples
+   * as diagnostic events; failures, retries, and slow calls are always
+   * retained, and exact counters are never sampled. Default: 0.01.
+   */
+  telemetrySampleRate?: number;
 }
 
 export interface PerCallOptions {
@@ -227,6 +239,8 @@ export interface PerCallOptions {
   idempotencyKey?: string | null;
   /** Per-call timeout in milliseconds (uses AbortController). */
   timeout?: number | null;
+  /** Cancel the logical request, including an open response body. */
+  signal?: AbortSignal | null;
 }
 
 export type RequestTags = Record<string, string>;
@@ -491,7 +505,16 @@ export declare class TrustedRouter {
   regionalFailover: boolean;
   baseUrls: string[];
   telemetryEnabled: boolean;
+  telemetrySampleRate: number;
   constructor(options?: TrustedRouterOptions);
+
+  /**
+   * Flush buffered client telemetry with one bounded attempt (default 2 s)
+   * and stop its worker. Optional: the beacon also flushes once on
+   * `beforeExit`; call this before `process.exit()` or when discarding a
+   * client early.
+   */
+  close(options?: { timeoutMs?: number }): Promise<void>;
 
   request(
     method: string,

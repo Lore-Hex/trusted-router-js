@@ -13,7 +13,9 @@
  * set + THE retry/failover engine + attempt assembly), internal/sse.js
  * (stream codec), internal/errors.js (error taxonomy), internal/models.js +
  * internal/orchestration.js (constants and tool builders), internal/pkce.js
- * (browser OAuth), internal/trust.js (trust-release fetch).
+ * (browser OAuth), internal/trust.js (trust-release fetch),
+ * internal/telemetry.js + internal/beacon.js (content-free client
+ * reliability telemetry: the x-tr-client header and the beacon channel).
  *
  * Attestation verification (`verifyGatewayAttestation`) lives in
  * ./attestation.js. TLS session pinning lives in the Node-only
@@ -77,8 +79,10 @@ export {
   TELEMETRY_ERROR_CLASSES,
   TELEMETRY_FINAL_OUTCOMES,
   TELEMETRY_HOSTS,
+  TELEMETRY_LATENCY_BUCKETS,
   TELEMETRY_OUTCOMES,
   TELEMETRY_SCHEMA_VERSION,
+  TELEMETRY_TIMEOUT_PHASES,
   resolveTelemetryEnabled,
 } from "./internal/telemetry.js";
 export { fetchTrustRelease, trustRelease } from "./internal/trust.js";

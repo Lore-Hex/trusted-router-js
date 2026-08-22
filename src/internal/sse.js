@@ -10,6 +10,11 @@
  */
 
 import { InternalError } from "./errors.js";
+import {
+  beginRecorderStream,
+  endRecorderStream,
+  recorderFor,
+} from "./telemetry.js";
 
 function protocolError(message, payload = null) {
   return new InternalError(502, message, payload);
@@ -20,7 +25,37 @@ function sseData(line) {
   return line.slice(5).trim();
 }
 
-export async function* iterSseChunks(response) {
+/**
+ * Delegate to a decoder and report its FIRST decoded event to the telemetry
+ * recorder the engine attached to this Response — the one place TTFT is
+ * observable (client telemetry contract v1 §6.1). A Response the engine did
+ * not return (no recorder) decodes exactly as before.
+ */
+async function* observeFirstEvent(response, events) {
+  let first = true;
+  beginRecorderStream(response);
+  try {
+    for await (const item of events) {
+      if (first) {
+        first = false;
+        recorderFor(response)?.onFirstEvent();
+      }
+      yield item;
+    }
+  } finally {
+    endRecorderStream(response);
+  }
+}
+
+export function iterSseChunks(response) {
+  return observeFirstEvent(response, decodeSseChunks(response));
+}
+
+export function iterSseEvents(response) {
+  return observeFirstEvent(response, decodeSseEvents(response));
+}
+
+async function* decodeSseChunks(response) {
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
@@ -59,7 +94,7 @@ export async function* iterSseChunks(response) {
   }
 }
 
-export async function* iterSseEvents(response) {
+async function* decodeSseEvents(response) {
   const decoder = new TextDecoder();
   let buffer = "";
   let frame = [];

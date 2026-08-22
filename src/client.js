@@ -9,9 +9,12 @@
  * references — those live only in ./internal/transport.js.
  *
  * `attestation()`, `status()`, and `trustRelease()` are documented
- * single-shot metadata fetches that stay outside the engine by design.
+ * single-shot metadata fetches that stay outside the engine by design — as
+ * is the client telemetry beacon (./internal/beacon.js), which this facade
+ * creates lazily on the first inference call and flushes in `close()`.
  */
 
+import { TelemetryReporter, sdkIdentity } from "./internal/beacon.js";
 import {
   classifyError,
   jsonOrThrow,
@@ -65,6 +68,8 @@ export class TrustedRouter {
     regionProbeTimeout = DEFAULT_REGION_PROBE_TIMEOUT_MS,
     failoverRegions = null,
     telemetry = null,
+    telemetrySampleRate = 0.01,
+    _telemetrySink = null,
   } = {}) {
     if (!fetchImpl) {
       throw new Error("A fetch implementation is required");
@@ -109,6 +114,42 @@ export class TrustedRouter {
       environ:
         typeof process !== "undefined" && process.env ? process.env : {},
     });
+    this.telemetrySampleRate = telemetrySampleRate;
+    this._telemetrySink = _telemetrySink ?? null;
+    this._ownsTelemetryReporter = false;
+  }
+
+  /**
+   * The beacon sink the engine hands finished records to: an injected sink,
+   * or a TelemetryReporter created on the first inference call (client
+   * telemetry contract v1 §6.2 — its own fetch, never this client's
+   * fetchImpl; its worker starts on the first record, never here).
+   */
+  _telemetrySinkOrStart() {
+    if (this._telemetrySink === null) {
+      this._telemetrySink = new TelemetryReporter({
+        controlBaseUrl: this.controlBaseUrl,
+        apiKeyProvider: () => this.apiKey,
+        workspaceId: this.workspaceId,
+        sdkIdentity: sdkIdentity(),
+        successSampleRate: this.telemetrySampleRate,
+      });
+      this._ownsTelemetryReporter = true;
+    }
+    return this._telemetrySink;
+  }
+
+  /**
+   * Flush buffered client telemetry with one bounded attempt (default 2 s)
+   * and stop its worker. Optional: the reporter also flushes once on
+   * `beforeExit`; call this when the process ends via `process.exit()` or
+   * when a client is discarded early.
+   */
+  async close({ timeoutMs = 2_000 } = {}) {
+    const sink = this._telemetrySink;
+    if (this._ownsTelemetryReporter && sink !== null && typeof sink.close === "function") {
+      await sink.close({ timeoutMs });
+    }
   }
 
   // ---- core request loop ----------------------------------------------
@@ -151,6 +192,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     // The gateway always streams. Collect chunks into an OpenAI-shape
@@ -165,6 +207,7 @@ export class TrustedRouter {
       idempotencyKey,
       workspaceId,
       timeout,
+      signal,
       ...params,
     })) {
       chunks.push(chunk);
@@ -181,6 +224,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
@@ -192,6 +236,7 @@ export class TrustedRouter {
       idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
+      signal,
     });
     if (!response.ok) {
       await throwFromResponse(response);
@@ -218,6 +263,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
@@ -229,6 +275,7 @@ export class TrustedRouter {
       idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
+      signal,
     });
     if (!response.ok) {
       await throwFromResponse(response);
@@ -307,6 +354,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
   }) {
     const body = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
@@ -323,6 +371,7 @@ export class TrustedRouter {
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
       workspaceId,
       timeout,
+      signal,
     });
   }
 
@@ -335,6 +384,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   }) {
     return this.request("POST", "/messages", {
@@ -344,6 +394,7 @@ export class TrustedRouter {
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
       workspaceId,
       timeout,
+      signal,
     });
   }
 
@@ -356,6 +407,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
@@ -372,6 +424,7 @@ export class TrustedRouter {
       idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
+      signal,
     });
   }
 
@@ -384,6 +437,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
@@ -395,6 +449,7 @@ export class TrustedRouter {
       idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
+      signal,
     });
     if (!response.ok) {
       await throwFromResponse(response);
@@ -411,6 +466,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     workspaceId = null,
     timeout = null,
+    signal = null,
     ...params
   } = {}) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
@@ -422,6 +478,7 @@ export class TrustedRouter {
       idempotencyKey: requestIdempotencyKey,
       workspaceId,
       timeout,
+      signal,
     });
     if (!response.ok) {
       await throwFromResponse(response);
@@ -437,6 +494,7 @@ export class TrustedRouter {
     instructions = null,
     workspaceId = null,
     idempotencyKey = null,
+    signal = null,
     ...params
   } = {}) {
     return this.request("POST", "/responses/input_tokens", {
@@ -449,6 +507,7 @@ export class TrustedRouter {
       }),
       workspaceId,
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
+      signal,
     });
   }
 

@@ -16,8 +16,10 @@ import {
   TELEMETRY_ERROR_CLASSES,
   TELEMETRY_FINAL_OUTCOMES,
   TELEMETRY_HOSTS,
+  TELEMETRY_LATENCY_BUCKETS,
   TELEMETRY_OUTCOMES,
   TELEMETRY_SCHEMA_VERSION,
+  TELEMETRY_TIMEOUT_PHASES,
   US_MODEL,
   VERSION,
   ZDR_MODEL,
@@ -27,6 +29,18 @@ import {
   selectorTool,
   subagentTool,
 } from "../src/index.js";
+import {
+  TELEMETRY_BACKOFF_MAX_MS,
+  TELEMETRY_BACKOFF_MIN_MS,
+  TELEMETRY_FLUSH_MS,
+  TELEMETRY_MAX_BATCH_BYTES,
+  TELEMETRY_MAX_BATCH_COUNTERS,
+  TELEMETRY_MAX_BATCH_EVENTS,
+  TELEMETRY_MAX_EVENTS,
+  TELEMETRY_MAX_WINDOW_KEYS,
+  TELEMETRY_RETENTION_BYTES,
+  TELEMETRY_RETENTION_MS,
+} from "../src/internal/beacon.js";
 import { DEFAULT_USER_AGENT } from "../src/internal/transport.js";
 
 test("exports stable routing and orchestration aliases", () => {
@@ -151,8 +165,9 @@ test("provider preferences are exact, composable, and validated", () => {
 
 test("telemetry parity constants pin the contract v1 vocabulary", () => {
   // These values are shared with every other TrustedRouter SDK and with the
-  // server's ClickHouse schema. They pin the vocabulary for the future
-  // beacon channel too — do not change them without a coordinated release.
+  // server's ClickHouse schema (beacon path, schema version, and the closed
+  // enums of the header AND beacon channels) — do not change them without a
+  // coordinated release.
   assert.equal(TELEMETRY_SCHEMA_VERSION, 1);
   assert.equal(DEFAULT_TELEMETRY_PATH, "/client-events");
   assert.deepEqual(
@@ -201,6 +216,40 @@ test("telemetry parity constants pin the contract v1 vocabulary", () => {
       "unknown",
     ],
   );
+  assert.deepEqual(
+    [...TELEMETRY_TIMEOUT_PHASES],
+    ["none", "connect", "first_byte", "idle", "total"],
+  );
+  assert.deepEqual(
+    [...TELEMETRY_LATENCY_BUCKETS],
+    [
+      "lt100",
+      "lt200",
+      "lt400",
+      "lt800",
+      "lt1600",
+      "lt3200",
+      "lt6400",
+      "lt12800",
+      "lt25600",
+      "lt51200",
+      "lt102400",
+      "ge102400",
+    ],
+  );
+});
+
+test("beacon bounds pin the contract v1 §6.2 numbers", () => {
+  assert.equal(TELEMETRY_FLUSH_MS, 30_000);
+  assert.equal(TELEMETRY_MAX_EVENTS, 1000);
+  assert.equal(TELEMETRY_MAX_BATCH_EVENTS, 100);
+  assert.equal(TELEMETRY_MAX_BATCH_COUNTERS, 200);
+  assert.equal(TELEMETRY_MAX_WINDOW_KEYS, 256);
+  assert.equal(TELEMETRY_MAX_BATCH_BYTES, 65_536);
+  assert.equal(TELEMETRY_RETENTION_MS, 86_400_000);
+  assert.equal(TELEMETRY_RETENTION_BYTES, 524_288);
+  assert.equal(TELEMETRY_BACKOFF_MIN_MS, 60_000);
+  assert.equal(TELEMETRY_BACKOFF_MAX_MS, 600_000);
 });
 
 test("VERSION matches package.json and User-Agent matches the contract grammar", async () => {
