@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TrustedRouter } from "../src/index.js";
+import { RecordingSink } from "../src/internal/telemetry.js";
 
 // The gateway's x-should-retry verdict overrides our status heuristics. A
 // status code cannot say whether a provider already ran: a 502 from "could not
@@ -9,8 +10,16 @@ import { TrustedRouter } from "../src/index.js";
 // settlement failed" are indistinguishable here, and only the second is
 // dangerous to re-send.
 
+// The in-memory telemetry sink keeps these tests hermetic (no beacon
+// reporter, whose own fetch would otherwise reach the control plane at exit).
 function clientWithFetch(fetchImpl, extra = {}) {
-  return new TrustedRouter({ apiKey: "sk-test", fetchImpl, maxRetries: 3, ...extra });
+  return new TrustedRouter({
+    apiKey: "sk-test",
+    fetchImpl,
+    maxRetries: 3,
+    _telemetrySink: new RecordingSink(),
+    ...extra,
+  });
 }
 
 function json(body, status, headers = {}) {
