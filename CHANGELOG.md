@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 — Unreleased
+
+- Added the official `trustedrouter` CLI to the npm package. It delegates to
+  the SDK for chat, catalog, trust-release, and attestation operations instead
+  of maintaining a second HTTP transport. The CLI supports stdin prompts,
+  plain streaming, deterministic JSON/JSONL output, machine-stable exit-code
+  families, raw and verified attestation, and G6 TLS-session verification.
+
 ## 0.7.0 — 2026-08-22
 
 - Added the `/v1/client-events` beacon channel (client telemetry contract v1
