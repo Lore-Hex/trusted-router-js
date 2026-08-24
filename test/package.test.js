@@ -10,11 +10,21 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+function npmEnvironment(cacheDir) {
+  return {
+    ...process.env,
+    npm_config_cache: cacheDir,
+    npm_config_loglevel: "error",
+    npm_config_update_notifier: "false",
+  };
+}
+
 test("package manifest is configured for a public Apache-2.0 npm release", async () => {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.name, "@lore-hex/trusted-router");
-  assert.equal(pkg.version, "0.7.0");
+  assert.equal(pkg.version, "0.8.0");
   assert.equal(pkg.license, "Apache-2.0");
+  assert.deepEqual(pkg.bin, { trustedrouter: "./src/cli.js" });
   assert.deepEqual(pkg.files, ["src", "README.md", "LICENSE"]);
   assert.deepEqual(Object.keys(pkg.exports).sort(), [
     ".",
@@ -45,13 +55,52 @@ if ("verifyGatewaySession" in root) throw new Error("session verifier is exporte
   await execFileAsync(process.execPath, ["--input-type=module", "-e", script], { cwd: root });
 });
 
+test("the packaged bin entrypoint resolves and reports the package version", async () => {
+  const { stdout, stderr } = await execFileAsync(
+    process.execPath,
+    [path.join(root, "src/cli.js"), "--version"],
+    { cwd: root },
+  );
+  assert.equal(stdout, "trustedrouter 0.8.0\n");
+  assert.equal(stderr, "");
+});
+
+test("npm exec infers the single trustedrouter bin from a packed package", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "trusted-router-npx-"));
+  const cacheDir = path.join(tempDir, "npm-cache");
+  try {
+    const { stdout: packOutput } = await execFileAsync(
+      "npm",
+      ["pack", "--json", "--pack-destination", tempDir],
+      {
+        cwd: root,
+        env: npmEnvironment(cacheDir),
+      },
+    );
+    const [pack] = JSON.parse(packOutput);
+    const tarball = path.join(tempDir, pack.filename);
+    const { stdout, stderr } = await execFileAsync(
+      "npm",
+      ["exec", "--yes", "--", `file:${tarball}`, "--version"],
+      {
+        cwd: tempDir,
+        env: npmEnvironment(cacheDir),
+      },
+    );
+    assert.equal(stdout, "trustedrouter 0.8.0\n");
+    assert.equal(stderr, "");
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
 test("npm dry-run package contains only release artifacts", async () => {
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), "trusted-router-npm-"));
   let stdout;
   try {
     ({ stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
       cwd: root,
-      env: { ...process.env, npm_config_cache: cacheDir },
+      env: npmEnvironment(cacheDir),
     }));
   } finally {
     await rm(cacheDir, { force: true, recursive: true });
@@ -69,6 +118,9 @@ test("npm dry-run package contains only release artifacts", async () => {
   assert.ok(paths.includes("src/oauth.d.ts"));
   assert.ok(paths.includes("src/session.js"));
   assert.ok(paths.includes("src/session.d.ts"));
+  assert.ok(paths.includes("src/cli.js"));
+  assert.ok(paths.includes("src/cli/main.js"));
+  assert.equal(pack.files.find((file) => file.path === "src/cli.js").mode, 0o755);
   assert.equal(paths.some((p) => p.startsWith("test/")), false);
   assert.equal(paths.some((p) => p.includes(".private")), false);
   assert.equal(paths.some((p) => p.startsWith(".env")), false);

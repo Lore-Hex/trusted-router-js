@@ -1,4 +1,4 @@
-# TrustedRouter JavaScript SDK
+# TrustedRouter JavaScript SDK and CLI
 
 [![npm version](https://img.shields.io/npm/v/@lore-hex/trusted-router?logo=npm)](https://www.npmjs.com/package/@lore-hex/trusted-router)
 [![npm downloads](https://img.shields.io/npm/dm/@lore-hex/trusted-router?logo=npm)](https://www.npmjs.com/package/@lore-hex/trusted-router)
@@ -24,6 +24,57 @@ npm install @lore-hex/trusted-router
 
 Runs on Node 20+, Deno, Bun, and modern browsers — no native deps. The
 attestation verifier uses the WebCrypto SubtleCrypto API.
+
+## Command-line interface
+
+The same npm package includes the official `trustedrouter` CLI. Install it
+globally, invoke it through `npx`, or keep it as a project dependency:
+
+```bash
+npm install --global @lore-hex/trusted-router
+export TRUSTEDROUTER_API_KEY="sk-tr-v1-..."
+
+trustedrouter chat "Explain confidential computing in one paragraph"
+printf '%s\n' 'Summarize this input' | trustedrouter chat - --stream
+trustedrouter models --json
+trustedrouter providers --json
+trustedrouter regions --json
+trustedrouter trust --json
+trustedrouter attest --verify --json
+trustedrouter attest --session --json
+
+# No global install:
+npx --yes @lore-hex/trusted-router models --json
+```
+
+`chat` accepts a positional prompt, an explicit `-`, or piped stdin when the
+prompt is omitted. Stdin must be valid UTF-8, is capped at 8 MiB, and preserves
+its leading/trailing whitespace. It defaults to `trustedrouter/auto`; use
+`--model` and `--max-tokens` to override that. `--stream --json` emits one
+compact JSONL `chat.delta` record per non-empty text delta followed by
+`chat.done`. Compact JSON and JSONL recursively sort object keys so byte output
+is deterministic.
+
+Every non-streaming command success in `--json` mode has the stable shape
+`{"command":"...","data":...,"ok":true}`. Errors go only to stderr as
+`{"error":{"message":"...","type":"..."},"ok":false}`, with
+`status_code` and `request_id` when available. Exit codes are stable by family:
+`0` success, `1` API/runtime failure, `2` usage/input error, and `3`
+authentication/permission failure.
+
+`attest --verify` checks the document signature and workload identity against
+the published trust release. `attest --session` additionally binds the check
+to the live connection's nonce and TLS exporter and runs a same-socket
+follow-up challenge.
+
+The CLI reads `TRUSTEDROUTER_API_KEY` (or the legacy `TR_API_KEY`) and never
+accepts a bearer as a command-line argument, where it could leak through shell
+history or the process list. Optional deployment overrides are
+`TRUSTEDROUTER_BASE_URL`, `TRUSTEDROUTER_CONTROL_BASE_URL`, and
+`TRUSTEDROUTER_WORKSPACE_ID`; `TR_BASE_URL` remains a legacy base-URL alias.
+Explicit `--help` output is always plain text, even alongside `--json`. Run
+`trustedrouter --help` or `trustedrouter chat --help` for the complete command
+reference. Invoking the CLI without a command is a usage error (exit `2`).
 
 ## Quick start
 
