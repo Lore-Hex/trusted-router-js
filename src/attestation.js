@@ -141,12 +141,47 @@ export async function verifyGatewayAttestation(document, {
   if (!policy) {
     throw new AttestationVerificationError("policy is required");
   }
-  const { header, payload, signingInput, signature } = parseJwt(document);
-  if (!jwks) {
-    jwks = await fetchJwks(jwksUrl, fetchImpl);
+  const payload = await verifiedJwtClaims(document, { jwks, jwksUrl, fetchImpl });
+  return await checkClaims(payload, {
+    policy,
+    nonceHex,
+    tlsCertDer,
+    tlsExporter,
+    bindingMode: "live-channel",
+  });
+}
+
+/**
+ * Verify a GCP Confidential Space key-binding attestation for a receipt key.
+ *
+ * This performs the same signature, issuer, audience, validity, debug,
+ * hardware, and image-policy checks as verifyGatewayAttestation(), but omits
+ * live TLS certificate/exporter binding. The receipt key commitment must occur
+ * somewhere in the token's eat_nonce values.
+ */
+export async function verifyReceiptKeyAttestation(document, {
+  policy,
+  keyCommitmentHex,
+  jwks = null,
+  jwksUrl = GCP_JWKS_URI,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!policy) {
+    throw new AttestationVerificationError("policy is required");
   }
-  await verifyRs256(jwks, header, signingInput, signature);
-  return await checkClaims(payload, { policy, nonceHex, tlsCertDer, tlsExporter });
+  if (typeof keyCommitmentHex !== "string" || !/^[0-9a-fA-F]{64}$/.test(keyCommitmentHex)) {
+    throw new AttestationVerificationError(
+      "receipt key commitment must be a 32-byte SHA-256 hex string",
+    );
+  }
+  const payload = await verifiedJwtClaims(document, { jwks, jwksUrl, fetchImpl });
+  await checkClaims(payload, {
+    policy,
+    nonceHex: keyCommitmentHex,
+    tlsCertDer: null,
+    tlsExporter: null,
+    bindingMode: "receipt-key",
+  });
 }
 
 // ---- internals ---------------------------------------------------------
@@ -243,7 +278,27 @@ async function verifyRs256(jwks, header, signingInput, signature) {
   }
 }
 
-async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }) {
+async function verifiedJwtClaims(document, { jwks, jwksUrl, fetchImpl }) {
+  const { header, payload, signingInput, signature } = parseJwt(document);
+  if (!jwks) {
+    jwks = await fetchJwks(jwksUrl, fetchImpl);
+  }
+  await verifyRs256(jwks, header, signingInput, signature);
+  return payload;
+}
+
+async function checkClaims(claims, {
+  policy,
+  nonceHex,
+  tlsCertDer,
+  tlsExporter,
+  bindingMode = "live-channel",
+}) {
+  if (bindingMode !== "live-channel" && bindingMode !== "receipt-key") {
+    throw new AttestationVerificationError(
+      `unsupported attestation binding mode ${JSON.stringify(bindingMode)}`,
+    );
+  }
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isSafeInteger(claims.exp)) {
     throw new AttestationVerificationError("JWT is missing a valid expiration");
@@ -326,11 +381,21 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
   }
 
   // Nonce binding (replay defense)
-  let nonces = claims.eat_nonce || claims.nonces || [];
+  const eatNonces = claims.eat_nonce;
+  let nonces = eatNonces || claims.nonces || [];
   if (typeof nonces === "string") nonces = [nonces];
   let nonceMatch = null;
   if (nonceHex !== null) {
-    if (!hasNonce(nonces, nonceHex)) {
+    let noncePresent;
+    if (bindingMode === "receipt-key") {
+      const receiptNonces = typeof eatNonces === "string"
+        ? [eatNonces]
+        : (Array.isArray(eatNonces) ? eatNonces : []);
+      noncePresent = hasNonce(receiptNonces, nonceHex);
+    } else {
+      noncePresent = hasNonce(nonces, nonceHex);
+    }
+    if (!noncePresent) {
       throw new AttestationVerificationError(
         `nonce ${JSON.stringify(nonceHex)} not present in JWT nonces ${JSON.stringify(nonces)}`,
       );
@@ -338,7 +403,7 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
     nonceMatch = nonceHex;
   }
 
-  if (tlsExporter !== null) {
+  if (bindingMode === "live-channel" && tlsExporter !== null) {
     if (nonceHex === null) {
       throw new AttestationVerificationError(
         "fresh nonce required with exporter binding",
@@ -360,30 +425,37 @@ async function checkClaims(claims, { policy, nonceHex, tlsCertDer, tlsExporter }
     }
   }
 
-  // Cert binding
-  let certSha = claims.tls_cert_sha256
-    || claims.workload_tls_cert_sha256
-    || (tlsCertDer ? findCertInNonces(nonces, await sha256Hex(tlsCertDer)) : null);
-  if (typeof certSha !== "string" || certSha.length !== 64) {
-    throw new AttestationVerificationError(
-      "JWT does not commit to a TLS cert SHA-256 — cannot bind connection",
-    );
-  }
-  certSha = certSha.toLowerCase();
-
-  if (tlsCertDer) {
-    const actual = await sha256Hex(tlsCertDer);
-    if (actual !== certSha) {
+  let certSha;
+  if (bindingMode === "live-channel") {
+    // Cert binding
+    certSha = claims.tls_cert_sha256
+      || claims.workload_tls_cert_sha256
+      || (tlsCertDer ? findCertInNonces(nonces, await sha256Hex(tlsCertDer)) : null);
+    if (typeof certSha !== "string" || certSha.length !== 64) {
       throw new AttestationVerificationError(
-        `TLS cert mismatch: connection=${JSON.stringify(actual)}, JWT=${JSON.stringify(certSha)}`,
+        "JWT does not commit to a TLS cert SHA-256 — cannot bind connection",
       );
     }
-  }
+    certSha = certSha.toLowerCase();
 
-  if (policy.certSha256 && certSha !== policy.certSha256.toLowerCase()) {
-    throw new AttestationVerificationError(
-      "JWT-committed cert SHA-256 doesn't match policy pin",
-    );
+    if (tlsCertDer) {
+      const actual = await sha256Hex(tlsCertDer);
+      if (actual !== certSha) {
+        throw new AttestationVerificationError(
+          `TLS cert mismatch: connection=${JSON.stringify(actual)}, JWT=${JSON.stringify(certSha)}`,
+        );
+      }
+    }
+
+    if (policy.certSha256 && certSha !== policy.certSha256.toLowerCase()) {
+      throw new AttestationVerificationError(
+        "JWT-committed cert SHA-256 doesn't match policy pin",
+      );
+    }
+  } else {
+    // A receipt attestation certifies a durable signing key. It is not
+    // evidence about the verifier's current TLS connection.
+    certSha = "";
   }
 
   return {

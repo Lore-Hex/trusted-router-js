@@ -56,6 +56,8 @@ export interface VerifyReceiptOptions {
   expectedNonce?: string | null;
   maxAgeSeconds?: number | null;
   now?: number | null;
+  /** Exact GCP CS JWT bytes pinned by att_sha256 or embedded in a flattened receipt. */
+  attestation?: ArrayBuffer | ArrayBufferView | null;
   requireAttestation?: boolean;
 }
 

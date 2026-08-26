@@ -699,46 +699,88 @@ async function streamDigest(stream, domain, expectedReceipt) {
 
 async function verifyGcpAttestation(attestation, commitment) {
   const policy = await receiptVerificationDependencies.policyFromTrustRelease();
-  await receiptVerificationDependencies.verifyGatewayAttestation(
-    encoder.encode(attestation),
-    { policy, nonceHex: [...commitment].map((byte) => byte.toString(16).padStart(2, "0")).join("") },
+  await receiptVerificationDependencies.verifyReceiptKeyAttestation(
+    attestation,
+    {
+      policy,
+      keyCommitmentHex: [...commitment]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join(""),
+    },
   );
 }
 
-async function attestationStatus(envelope, header, publicKey, requireAttestation) {
+function embeddedAttestationBytes(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) {
+      throw new ReceiptAttestationError(
+        "attestation check failed: flattened receipt att must be ASCII",
+      );
+    }
+  }
+  return encoder.encode(value);
+}
+
+async function attestationStatus(
+  envelope,
+  header,
+  publicKey,
+  { attestation, attSha256, requireAttestation },
+) {
+  let document;
   if (!envelope.flattened) {
-    if (requireAttestation) {
+    if (attestation === null) {
+      if (!requireAttestation) return "unverified_by_this_sdk";
       throw new MissingAttestationError(
         "attestation check failed: compact receipts omit attestation evidence; obtain the pinned document or explicitly pass requireAttestation: false",
       );
     }
-    return "unverified_by_this_sdk";
-  }
-  const kind = header.att_kind;
-  const attestation = header.att;
-  if (kind === "aws-nitro-cose" || kind === "azure-maa-jwt") {
-    throw new UnsupportedAttestationError(
-      `attestation kind check failed: ${repr(kind)} is not supported by this SDK`,
-    );
-  }
-  if (kind !== "gcp-cs-jwt") {
-    if (kind === undefined || kind === null) {
+    if (attSha256 === null) {
       throw new MissingAttestationError(
-        "attestation check failed: flattened receipt has no att_kind",
+        "attestation check failed: compact receipt has no att_sha256 claim",
       );
     }
-    throw new UnsupportedAttestationError(
-      `attestation kind check failed: unsupported att_kind ${repr(kind)}`,
-    );
-  }
-  if (typeof attestation !== "string" || !attestation) {
-    throw new MissingAttestationError(
-      "attestation check failed: flattened receipt has no embedded att",
-    );
+    const expectedDigest = b64urlDecode(attSha256, "att_sha256 claim");
+    const actualDigest = await sha256(attestation);
+    if (!equalBytes(actualDigest, expectedDigest)) {
+      throw new ReceiptAttestationError(
+        "att_sha256 check failed: supplied attestation does not match the compact receipt",
+      );
+    }
+    document = attestation;
+  } else {
+    const kind = header.att_kind;
+    const embedded = header.att;
+    if (kind === "aws-nitro-cose" || kind === "azure-maa-jwt") {
+      throw new UnsupportedAttestationError(
+        `attestation kind check failed: ${repr(kind)} is not supported by this SDK`,
+      );
+    }
+    if (kind !== "gcp-cs-jwt") {
+      if (kind === undefined || kind === null) {
+        throw new MissingAttestationError(
+          "attestation check failed: flattened receipt has no att_kind",
+        );
+      }
+      throw new UnsupportedAttestationError(
+        `attestation kind check failed: unsupported att_kind ${repr(kind)}`,
+      );
+    }
+    if (typeof embedded !== "string" || !embedded) {
+      throw new MissingAttestationError(
+        "attestation check failed: flattened receipt has no embedded att",
+      );
+    }
+    document = embeddedAttestationBytes(embedded);
+    if (attestation !== null && !equalBytes(attestation, document)) {
+      throw new ReceiptAttestationError(
+        "attestation check failed: supplied attestation does not match the flattened receipt's embedded attestation",
+      );
+    }
   }
   const commitment = await sha256(concatBytes([KEY_COMMITMENT_DOMAIN, publicKey]));
   try {
-    await verifyGcpAttestation(attestation, commitment);
+    await verifyGcpAttestation(document, commitment);
   } catch (error) {
     if (error instanceof ReceiptVerificationError) throw error;
     throw new ReceiptAttestationError(`GCP attestation check failed: ${error.message}`, {
@@ -748,7 +790,15 @@ async function attestationStatus(envelope, header, publicKey, requireAttestation
   return "verified";
 }
 
-/** Verify a compact or flattened inference receipt and return its v1 claims. */
+/**
+ * Verify a compact or flattened inference receipt and return its v1 claims.
+ *
+ * Compact receipts cannot carry their attestation document. Pass its exact
+ * bytes as `attestation` to check the pinned digest and verify the receipt-key
+ * binding. `requireAttestation: false` is an explicit signature-and-hashes-only
+ * escape hatch when those bytes are unavailable. Flattened receipts always
+ * verify their embedded evidence; a supplied `attestation` must match it.
+ */
 export async function verifyReceipt(receipt, {
   requestBody = null,
   responseBody = null,
@@ -756,6 +806,7 @@ export async function verifyReceipt(receipt, {
   expectedNonce = null,
   maxAgeSeconds = null,
   now = null,
+  attestation = null,
   requireAttestation = true,
 } = {}) {
   const envelope = parseEnvelope(receipt);
@@ -764,6 +815,16 @@ export async function verifyReceipt(receipt, {
   const payload = loadJson(payloadBytes, "receipt claims");
   if (!isRecord(payload)) {
     throw new ReceiptClaimsError("rv claim check failed: receipt claims must be a JSON object");
+  }
+  let attestationBytes = null;
+  if (attestation !== null && attestation !== undefined) {
+    attestationBytes = bytesFrom(attestation);
+    if (attestationBytes === null) {
+      throw new ReceiptAttestationError(
+        "attestation check failed: attestation must be exact bytes",
+      );
+    }
+    attestationBytes = new Uint8Array(attestationBytes);
   }
 
   if (!Number.isSafeInteger(payload.rv) || payload.rv !== 1) {
@@ -842,12 +903,31 @@ export async function verifyReceipt(receipt, {
     );
   }
 
-  const attestationStatusValue = await attestationStatus(
-    envelope,
-    header,
-    publicKey,
+  const attSha256 = optionalString(payload, "att_sha256");
+  if (attSha256 !== null) {
+    let attDigest;
+    try {
+      attDigest = b64urlDecode(attSha256, "att_sha256 claim");
+    } catch (error) {
+      throw new ReceiptClaimsError(error.message, { cause: error });
+    }
+    if (attDigest.length !== 32) {
+      throw new ReceiptClaimsError(
+        "att_sha256 claim check failed: SHA-256 digest must be 32 bytes",
+      );
+    }
+  }
+  if (!envelope.flattened && attSha256 === null) {
+    throw new ReceiptClaimsError(
+      "att_sha256 claim check failed: compact receipts must pin an attestation document",
+    );
+  }
+
+  const attestationStatusValue = await attestationStatus(envelope, header, publicKey, {
+    attestation: attestationBytes,
+    attSha256,
     requireAttestation,
-  );
+  });
 
   const req = digestClaim(
     requiredMapping(payload, "req", ReceiptHashError),
@@ -935,26 +1015,6 @@ export async function verifyReceipt(receipt, {
     verificationExpiresAt,
     certSha256,
   });
-  const attSha256 = optionalString(payload, "att_sha256");
-  if (attSha256 !== null) {
-    let attDigest;
-    try {
-      attDigest = b64urlDecode(attSha256, "att_sha256 claim");
-    } catch (error) {
-      throw new ReceiptClaimsError(error.message, { cause: error });
-    }
-    if (attDigest.length !== 32) {
-      throw new ReceiptClaimsError(
-        "att_sha256 claim check failed: SHA-256 digest must be 32 bytes",
-      );
-    }
-  }
-  if (!envelope.flattened && attSha256 === null) {
-    throw new ReceiptClaimsError(
-      "att_sha256 claim check failed: compact receipts must pin an attestation document",
-    );
-  }
-
   return Object.freeze({
     rv: payload.rv,
     iss,

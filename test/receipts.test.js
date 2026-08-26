@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   MissingAttestationError,
+  ReceiptAttestationError,
   ReceiptCapture,
   ReceiptHashError,
   ReceiptHeaderError,
@@ -18,6 +19,11 @@ import {
   UnsupportedAttestationError,
   verifyReceipt,
 } from "../src/receipts.js";
+import {
+  GCP_ISSUER,
+  verifyGatewayAttestation,
+  verifyReceiptKeyAttestation,
+} from "../src/attestation.js";
 import { receiptVerificationDependencies } from "../src/internal/receipt-dependencies.js";
 
 if (!globalThis.crypto) {
@@ -51,6 +57,75 @@ async function digest(value) {
 
 async function keypair() {
   return crypto.subtle.generateKey("Ed25519", true, ["sign", "verify"]);
+}
+
+async function rsaKeypair() {
+  return crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+}
+
+async function gcpKeyAttestation(keyPair, nonces) {
+  const header = b64url(enc(JSON.stringify({ alg: "RS256", kid: "test-kid" })));
+  const claims = {
+    iss: GCP_ISSUER,
+    aud: ["quill-cloud"],
+    exp: 4_000_000_000,
+    dbgstat: "disabled-since-boot",
+    swname: "CONFIDENTIAL_SPACE",
+    secboot: true,
+    hwmodel: "GCP_AMD_SEV",
+    submods: {
+      container: {
+        image_digest: "sha256:abc123",
+        image_reference: "registry.example/image:tag",
+      },
+    },
+    eat_nonce: nonces,
+  };
+  const payload = b64url(enc(JSON.stringify(claims)));
+  const signingInput = enc(`${header}.${payload}`);
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    keyPair.privateKey,
+    signingInput,
+  );
+  return enc(`${header}.${payload}.${b64url(signature)}`);
+}
+
+async function gcpJwks(keyPair) {
+  const jwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+  return { keys: [{ ...jwk, kid: "test-kid", alg: "RS256" }] };
+}
+
+async function receiptKeyCommitment(keyPair) {
+  const publicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+  return new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    join(enc("inference-receipt-key-v1\0"), publicRaw),
+  ));
+}
+
+async function withGcpReceiptVerifier({ jwks, policy }, callback) {
+  const originalPolicy = receiptVerificationDependencies.policyFromTrustRelease;
+  const originalVerify = receiptVerificationDependencies.verifyReceiptKeyAttestation;
+  receiptVerificationDependencies.policyFromTrustRelease = async () => policy;
+  receiptVerificationDependencies.verifyReceiptKeyAttestation = (document, options) => (
+    verifyReceiptKeyAttestation(document, { ...options, jwks })
+  );
+  try {
+    return await callback();
+  } finally {
+    receiptVerificationDependencies.policyFromTrustRelease = originalPolicy;
+    receiptVerificationDependencies.verifyReceiptKeyAttestation = originalVerify;
+  }
 }
 
 async function baseClaims({ responseOf = "body", responseHash = null } = {}) {
@@ -162,7 +237,7 @@ async function streamReceipt({ events = 1 } = {}) {
 // Frozen vectors carry placeholder evidence; mirror the Python fixture suite's
 // monkeypatch while still exercising the exact signed JWS and wire bytes.
 receiptVerificationDependencies.policyFromTrustRelease = async () => ({});
-receiptVerificationDependencies.verifyGatewayAttestation = async () => ({});
+receiptVerificationDependencies.verifyReceiptKeyAttestation = async () => ({});
 
 for (const name of ["compact-body", "chat-stream", "responses-stream"]) {
   test(`frozen receipt fixture verifies: ${name}`, async () => {
@@ -381,11 +456,11 @@ test("duplicate JSON members are rejected in flattened, header, and claims JSON"
 
 test("GCP attestation verification receives the domain-separated key commitment", async () => {
   const originalPolicy = receiptVerificationDependencies.policyFromTrustRelease;
-  const originalVerify = receiptVerificationDependencies.verifyGatewayAttestation;
+  const originalVerify = receiptVerificationDependencies.verifyReceiptKeyAttestation;
   const policy = { fixture: true };
   let seen = null;
   receiptVerificationDependencies.policyFromTrustRelease = async () => policy;
-  receiptVerificationDependencies.verifyGatewayAttestation = async (document, options) => {
+  receiptVerificationDependencies.verifyReceiptKeyAttestation = async (document, options) => {
     seen = { document, options };
   };
   try {
@@ -403,11 +478,132 @@ test("GCP attestation verification receives the domain-separated key commitment"
       .join("");
     assert.equal(verified.attestationStatus, "verified");
     assert.equal(new TextDecoder().decode(seen.document), "fake.jwt.token");
-    assert.deepEqual(seen.options, { policy, nonceHex: expectedHex });
+    assert.deepEqual(seen.options, { policy, keyCommitmentHex: expectedHex });
   } finally {
     receiptVerificationDependencies.policyFromTrustRelease = originalPolicy;
-    receiptVerificationDependencies.verifyGatewayAttestation = originalVerify;
+    receiptVerificationDependencies.verifyReceiptKeyAttestation = originalVerify;
   }
+});
+
+for (const commitmentPosition of [0, 2]) {
+  test(`receipt key binding accepts commitment at nonce position ${commitmentPosition} without live channel binding`, async () => {
+    const receiptKey = await keypair();
+    const commitment = await receiptKeyCommitment(receiptKey);
+    const commitmentHex = [...commitment]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    const nonces = ["a".repeat(64), "b".repeat(64)];
+    nonces.splice(commitmentPosition, 0, commitmentHex);
+    const attestationKey = await rsaKeypair();
+    const document = await gcpKeyAttestation(attestationKey, nonces);
+    const jwks = await gcpJwks(attestationKey);
+    const policy = {
+      audience: "quill-cloud",
+      imageDigest: "sha256:abc123",
+      imageReference: null,
+    };
+    const claims = await baseClaims();
+    delete claims.att_sha256;
+    const { receipt } = await signReceipt(claims, {
+      key: receiptKey,
+      flattened: true,
+      headerUpdates: { att: new TextDecoder().decode(document) },
+    });
+
+    await withGcpReceiptVerifier({ jwks, policy }, async () => {
+      const verified = await verifyReceipt(receipt, { now: NOW });
+      assert.equal(verified.attestationStatus, "verified");
+    });
+
+    await assert.rejects(
+      verifyGatewayAttestation(document, { policy, jwks }),
+      /TLS cert/,
+    );
+  });
+}
+
+test("receipt key binding rejects the wrong commitment", async () => {
+  const attestationKey = await rsaKeypair();
+  const document = await gcpKeyAttestation(
+    attestationKey,
+    ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+  );
+  const jwks = await gcpJwks(attestationKey);
+  const policy = {
+    audience: "quill-cloud",
+    imageDigest: "sha256:abc123",
+    imageReference: null,
+  };
+  const claims = await baseClaims();
+  delete claims.att_sha256;
+  const { receipt } = await signReceipt(claims, {
+    flattened: true,
+    headerUpdates: { att: new TextDecoder().decode(document) },
+  });
+
+  await withGcpReceiptVerifier({ jwks, policy }, () => assert.rejects(
+    verifyReceipt(receipt, { now: NOW }),
+    /not present in JWT nonces/,
+  ));
+});
+
+test("compact receipt verifies a supplied pinned attestation and rejects a one-byte mismatch", async () => {
+  const receiptKey = await keypair();
+  const commitment = await receiptKeyCommitment(receiptKey);
+  const commitmentHex = [...commitment]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const attestationKey = await rsaKeypair();
+  const document = await gcpKeyAttestation(
+    attestationKey,
+    ["a".repeat(64), "b".repeat(64), commitmentHex],
+  );
+  const jwks = await gcpJwks(attestationKey);
+  const policy = {
+    audience: "quill-cloud",
+    imageDigest: "sha256:abc123",
+    imageReference: null,
+  };
+  const claims = await baseClaims();
+  claims.att_sha256 = await digest(document);
+  const { receipt } = await signReceipt(claims, { key: receiptKey });
+
+  await withGcpReceiptVerifier({ jwks, policy }, async () => {
+    const verified = await verifyReceipt(receipt, { attestation: document, now: NOW });
+    assert.equal(verified.attestationStatus, "verified");
+
+    const changed = new Uint8Array(document);
+    changed[changed.length - 1] ^= 1;
+    await assert.rejects(
+      verifyReceipt(receipt, { attestation: changed, now: NOW }),
+      /att_sha256 check failed/,
+    );
+  });
+});
+
+test("flattened receipt rejects mismatched supplied attestation bytes", async () => {
+  const receiptKey = await keypair();
+  const commitment = await receiptKeyCommitment(receiptKey);
+  const commitmentHex = [...commitment]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const attestationKey = await rsaKeypair();
+  const document = await gcpKeyAttestation(
+    attestationKey,
+    ["a".repeat(64), "b".repeat(64), commitmentHex],
+  );
+  const claims = await baseClaims();
+  delete claims.att_sha256;
+  const { receipt } = await signReceipt(claims, {
+    key: receiptKey,
+    flattened: true,
+    headerUpdates: { att: new TextDecoder().decode(document) },
+  });
+
+  await assert.rejects(
+    verifyReceipt(receipt, { attestation: join(document, enc("x")), now: NOW }),
+    ReceiptAttestationError,
+  );
 });
 
 test("multi-line data and unknown SSE fields fail verification", async () => {
