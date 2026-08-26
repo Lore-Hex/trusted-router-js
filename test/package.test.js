@@ -30,6 +30,7 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
     ".",
     "./attestation",
     "./oauth",
+    "./receipts",
     "./session",
   ]);
   assert.equal(pkg.publishConfig.access, "public");
@@ -50,6 +51,7 @@ import { register } from "node:module";
 register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loaderSource)}`)}, import.meta.url);
 const root = await import("./src/index.js");
 if (typeof root.TrustedRouter !== "function") throw new Error("missing TrustedRouter");
+if (typeof root.verifyReceipt !== "function") throw new Error("missing verifyReceipt");
 if ("verifyGatewaySession" in root) throw new Error("session verifier is exported from root");
 `;
   await execFileAsync(process.execPath, ["--input-type=module", "-e", script], { cwd: root });
@@ -116,6 +118,8 @@ test("npm dry-run package contains only release artifacts", async () => {
   assert.ok(paths.includes("src/attestation.d.ts"));
   assert.ok(paths.includes("src/oauth.js"));
   assert.ok(paths.includes("src/oauth.d.ts"));
+  assert.ok(paths.includes("src/receipts.js"));
+  assert.ok(paths.includes("src/receipts.d.ts"));
   assert.ok(paths.includes("src/session.js"));
   assert.ok(paths.includes("src/session.d.ts"));
   assert.ok(paths.includes("src/cli.js"));

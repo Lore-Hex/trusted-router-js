@@ -21,6 +21,10 @@
       "types": "./src/oauth.d.ts",
       "import": "./src/oauth.js"
     },
+    "./receipts": {
+      "types": "./src/receipts.d.ts",
+      "import": "./src/receipts.js"
+    },
     "./session": {
       "types": "./src/session.d.ts",
       "import": "./src/session.js"
@@ -42,7 +46,7 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/client.js && node --check src/attestation.js && node --check src/session.js && node --check src/oauth.js && node --check src/cli.js && node --check src/cli/main.js && node --check src/internal/beacon.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/sse.js && node --check src/internal/telemetry.js && node --check src/internal/transport.js && node --check src/internal/trust.js",
+    "check": "node --check src/index.js && node --check src/client.js && node --check src/attestation.js && node --check src/receipts.js && node --check src/session.js && node --check src/oauth.js && node --check src/cli.js && node --check src/cli/main.js && node --check src/internal/beacon.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/receipt-dependencies.js && node --check src/internal/sse.js && node --check src/internal/telemetry.js && node --check src/internal/transport.js && node --check src/internal/trust.js",
     "test": "node --test"
   },
   "engines": {

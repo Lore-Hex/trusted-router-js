@@ -1,4 +1,31 @@
 export declare const VERSION: string;
+export {
+  MissingAttestationError,
+  ReceiptAttestationError,
+  ReceiptCapture,
+  ReceiptClaimsError,
+  ReceiptHashError,
+  ReceiptHeaderError,
+  ReceiptNonceError,
+  ReceiptSignatureError,
+  ReceiptStructureError,
+  ReceiptTimeError,
+  ReceiptUpstreamError,
+  ReceiptVerificationError,
+  UnsupportedAttestationError,
+  verifyReceipt,
+} from "./receipts.js";
+export type {
+  FlattenedReceiptJws,
+  ReceiptAttestationStatus,
+  ReceiptClaims,
+  ReceiptHashClaims,
+  ReceiptModelClaims,
+  ReceiptResponseDomain,
+  ReceiptRoute,
+  ReceiptUpstreamClaims,
+  VerifyReceiptOptions,
+} from "./receipts.js";
 export declare const DEFAULT_API_BASE_URL: "https://api.trustedrouter.com/v1";
 export declare const DEFAULT_CONTROL_BASE_URL: "https://trustedrouter.com/v1";
 export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";

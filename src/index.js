@@ -86,3 +86,19 @@ export {
   resolveTelemetryEnabled,
 } from "./internal/telemetry.js";
 export { fetchTrustRelease, trustRelease } from "./internal/trust.js";
+export {
+  MissingAttestationError,
+  ReceiptAttestationError,
+  ReceiptCapture,
+  ReceiptClaimsError,
+  ReceiptHashError,
+  ReceiptHeaderError,
+  ReceiptNonceError,
+  ReceiptSignatureError,
+  ReceiptStructureError,
+  ReceiptTimeError,
+  ReceiptUpstreamError,
+  ReceiptVerificationError,
+  UnsupportedAttestationError,
+  verifyReceipt,
+} from "./receipts.js";
