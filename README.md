@@ -432,6 +432,38 @@ failure — bad signature, expired JWT, wrong issuer, audience mismatch,
 image_digest mismatch, image_reference mismatch, missing nonce echo, or
 TLS cert mismatch. Never returns falsey for a failed verification.
 
+## Receipt verification
+
+`verifyReceipt()` verifies the receipt signature, request/response hashes, and
+the GCP attestation binding the durable receipt signing key to the published
+workload image:
+
+```js
+import { verifyReceipt } from "@lore-hex/trusted-router/receipts";
+
+const verified = await verifyReceipt(compactReceipt, {
+  requestBody,
+  responseBody,
+  attestation: receiptAttestationBytes,
+});
+```
+
+Compact receipts contain an `att_sha256` claim instead of carrying the full
+attestation document. Supply the exact document bytes with `attestation`; the
+SDK checks their SHA-256 digest before verifying the receipt-key binding. A
+flattened receipt embeds the document, and any separately supplied
+`attestation` must match the embedded bytes exactly. Omitting the document from
+a compact receipt still fails by default; `requireAttestation: false` remains
+the explicit signature-and-hashes-only escape hatch.
+
+The gateway's `/receipt-attestation` endpoint serves the **per-instance**
+document. Because a request can reach a different instance from the one that
+issued the receipt, retry that fetch until `sha256(document)` matches the
+receipt's `att_sha256` claim, then pass those exact bytes to `verifyReceipt()`.
+Send `Connection: close` (or otherwise avoid connection reuse) between
+retries — a kept-alive connection pins every retry to the same instance and
+the loop never converges.
+
 ## Bring your own fetch
 
 Pass `fetchImpl` for custom transports (proxies, retries you manage,

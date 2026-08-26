@@ -55,3 +55,14 @@ export declare function verifyGatewayAttestation(
     fetchImpl?: typeof fetch;
   },
 ): Promise<GatewayAttestation>;
+
+export declare function verifyReceiptKeyAttestation(
+  document: Uint8Array | string,
+  opts: {
+    policy: AttestationPolicy;
+    keyCommitmentHex: string;
+    jwks?: { keys: Array<Record<string, unknown>> } | null;
+    jwksUrl?: string;
+    fetchImpl?: typeof fetch;
+  },
+): Promise<void>;
