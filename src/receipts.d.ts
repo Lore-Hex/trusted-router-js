@@ -50,6 +50,8 @@ export interface ReceiptClaims {
 }
 
 export interface VerifyReceiptOptions {
+  /** HTTPS origin that must match the signed iss claim after origin normalization. */
+  expectedIssuer: string;
   requestBody?: ArrayBuffer | ArrayBufferView | null;
   responseBody?: ArrayBuffer | ArrayBufferView | null;
   responseStream?: ArrayBuffer | ArrayBufferView | null;
@@ -59,6 +61,8 @@ export interface VerifyReceiptOptions {
   /** Exact GCP CS JWT bytes pinned by att_sha256 or embedded in a flattened receipt. */
   attestation?: ArrayBuffer | ArrayBufferView | null;
   requireAttestation?: boolean;
+  /** Require both request and response traffic bindings. Defaults to true. */
+  requireBindings?: boolean;
 }
 
 export declare class ReceiptVerificationError extends Error {}
@@ -66,6 +70,8 @@ export declare class ReceiptStructureError extends ReceiptVerificationError {}
 export declare class ReceiptHeaderError extends ReceiptVerificationError {}
 export declare class ReceiptSignatureError extends ReceiptVerificationError {}
 export declare class ReceiptClaimsError extends ReceiptVerificationError {}
+export declare class MissingBindingError extends ReceiptClaimsError {}
+export declare class ReceiptIssuerError extends ReceiptClaimsError {}
 export declare class ReceiptTimeError extends ReceiptClaimsError {}
 export declare class ReceiptNonceError extends ReceiptClaimsError {}
 export declare class ReceiptUpstreamError extends ReceiptClaimsError {}
@@ -76,7 +82,7 @@ export declare class UnsupportedAttestationError extends ReceiptAttestationError
 
 export declare function verifyReceipt(
   receipt: string | ArrayBuffer | ArrayBufferView | FlattenedReceiptJws,
-  options?: VerifyReceiptOptions,
+  options: VerifyReceiptOptions,
 ): Promise<ReceiptClaims>;
 
 export declare class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
@@ -86,5 +92,5 @@ export declare class ReceiptCapture implements AsyncIterableIterator<Uint8Array>
   next(): Promise<IteratorResult<Uint8Array>>;
   return(value?: unknown): Promise<IteratorResult<Uint8Array>>;
   [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array>;
-  verify(options?: Omit<VerifyReceiptOptions, "responseStream">): Promise<ReceiptClaims>;
+  verify(options: Omit<VerifyReceiptOptions, "responseStream">): Promise<ReceiptClaims>;
 }

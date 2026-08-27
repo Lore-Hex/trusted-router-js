@@ -1,11 +1,13 @@
 export declare const VERSION: string;
 export {
   MissingAttestationError,
+  MissingBindingError,
   ReceiptAttestationError,
   ReceiptCapture,
   ReceiptClaimsError,
   ReceiptHashError,
   ReceiptHeaderError,
+  ReceiptIssuerError,
   ReceiptNonceError,
   ReceiptSignatureError,
   ReceiptStructureError,

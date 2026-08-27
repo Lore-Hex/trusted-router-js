@@ -88,11 +88,13 @@ export {
 export { fetchTrustRelease, trustRelease } from "./internal/trust.js";
 export {
   MissingAttestationError,
+  MissingBindingError,
   ReceiptAttestationError,
   ReceiptCapture,
   ReceiptClaimsError,
   ReceiptHashError,
   ReceiptHeaderError,
+  ReceiptIssuerError,
   ReceiptNonceError,
   ReceiptSignatureError,
   ReceiptStructureError,
