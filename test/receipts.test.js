@@ -7,10 +7,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   MissingAttestationError,
+  MissingBindingError,
   ReceiptAttestationError,
   ReceiptCapture,
   ReceiptHashError,
   ReceiptHeaderError,
+  ReceiptIssuerError,
   ReceiptNonceError,
   ReceiptSignatureError,
   ReceiptStructureError,
@@ -21,6 +23,7 @@ import {
 } from "../src/receipts.js";
 import {
   GCP_ISSUER,
+  GCP_JWKS_URI,
   verifyGatewayAttestation,
   verifyReceiptKeyAttestation,
 } from "../src/attestation.js";
@@ -31,6 +34,7 @@ if (!globalThis.crypto) {
 }
 
 const NOW = 1_756_223_999;
+const EXPECTED_ISSUER = "https://api.trustedrouter.com";
 const fixtureRoot = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "fixtures",
@@ -244,6 +248,7 @@ for (const name of ["compact-body", "chat-stream", "responses-stream"]) {
     const directory = path.join(fixtureRoot, name);
     const metadata = JSON.parse(await readFile(path.join(directory, "metadata.json"), "utf8"));
     const options = {
+      expectedIssuer: EXPECTED_ISSUER,
       expectedNonce: metadata.expected_nonce,
       requireAttestation: metadata.require_attestation,
       now: metadata.now,
@@ -265,6 +270,7 @@ for (const name of ["compact-body", "chat-stream", "responses-stream"]) {
 test("compact receipt verifies exact request and response bodies", async () => {
   const { receipt } = await signReceipt(await baseClaims());
   const verified = await verifyReceipt(receipt, {
+    expectedIssuer: EXPECTED_ISSUER,
     requestBody: enc("request"),
     responseBody: enc("response"),
     expectedNonce: "nonce_test",
@@ -277,6 +283,169 @@ test("compact receipt verifies exact request and response bodies", async () => {
   assert.equal(verified.attestation, verified.attestationStatus);
 });
 
+test("bindings are required by default and can be explicitly disabled", async () => {
+  const { receipt } = await signReceipt(await baseClaims());
+
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireAttestation: false,
+    }),
+    (error) => {
+      assert.ok(error instanceof MissingBindingError);
+      assert.match(
+        error.message,
+        /missing requestBody and responseBody or responseStream/,
+      );
+      return true;
+    },
+  );
+
+  const verified = await verifyReceipt(receipt, {
+    expectedIssuer: EXPECTED_ISSUER,
+    now: NOW,
+    requireAttestation: false,
+    requireBindings: false,
+  });
+  assert.equal(verified.iss, EXPECTED_ISSUER);
+});
+
+test("partial bindings fail closed by default", async () => {
+  const { receipt } = await signReceipt(await baseClaims());
+
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      requestBody: enc("request"),
+      now: NOW,
+      requireAttestation: false,
+    }),
+    (error) => {
+      assert.ok(error instanceof MissingBindingError);
+      assert.match(error.message, /missing responseBody or responseStream/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      responseBody: enc("response"),
+      now: NOW,
+      requireAttestation: false,
+    }),
+    (error) => {
+      assert.ok(error instanceof MissingBindingError);
+      assert.match(error.message, /missing requestBody/);
+      return true;
+    },
+  );
+});
+
+test("expected issuer exact match passes and mismatch is typed", async () => {
+  const { receipt } = await signReceipt(await baseClaims());
+  const verified = await verifyReceipt(receipt, {
+    expectedIssuer: EXPECTED_ISSUER,
+    now: NOW,
+    requireAttestation: false,
+    requireBindings: false,
+  });
+  assert.equal(verified.iss, EXPECTED_ISSUER);
+
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: "https://other.example",
+      now: NOW,
+      requireAttestation: false,
+      requireBindings: false,
+    }),
+    (error) => {
+      assert.ok(error instanceof ReceiptIssuerError);
+      assert.match(error.message, /iss claim check failed: expected/);
+      return true;
+    },
+  );
+});
+
+test("expected issuer is required and must be HTTPS", async () => {
+  const { receipt } = await signReceipt(await baseClaims());
+  const common = {
+    requestBody: enc("request"),
+    responseBody: enc("response"),
+    now: NOW,
+    requireAttestation: false,
+  };
+
+  await assert.rejects(
+    verifyReceipt(receipt, common),
+    ReceiptIssuerError,
+  );
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      ...common,
+      expectedIssuer: "http://api.trustedrouter.com",
+    }),
+    (error) => {
+      assert.ok(error instanceof ReceiptIssuerError);
+      assert.match(error.message, /must use https/);
+      return true;
+    },
+  );
+});
+
+for (const [receiptIssuer, expectedIssuer] of [
+  ["https://API.TrustedRouter.COM/", "HTTPS://api.trustedrouter.com"],
+  ["https://API.TrustedRouter.COM:8443/", "https://api.trustedrouter.com:8443"],
+  ["https://api.trustedrouter.com:443/", "https://api.trustedrouter.com"],
+]) {
+  test(`issuer origin normalization: ${receiptIssuer}`, async () => {
+    const claims = await baseClaims();
+    claims.iss = receiptIssuer;
+    const { receipt } = await signReceipt(claims);
+    const verified = await verifyReceipt(receipt, {
+      expectedIssuer,
+      now: NOW,
+      requireAttestation: false,
+      requireBindings: false,
+    });
+    assert.equal(verified.iss, receiptIssuer);
+  });
+}
+
+test("issuer port must match after normalization", async () => {
+  const claims = await baseClaims();
+  claims.iss = `${EXPECTED_ISSUER}:8443`;
+  const { receipt } = await signReceipt(claims);
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireAttestation: false,
+      requireBindings: false,
+    }),
+    ReceiptIssuerError,
+  );
+});
+
+test("HTTP receipt issuer is rejected", async () => {
+  const claims = await baseClaims();
+  claims.iss = "http://api.trustedrouter.com";
+  const { receipt } = await signReceipt(claims);
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireAttestation: false,
+      requireBindings: false,
+    }),
+    (error) => {
+      assert.ok(error instanceof ReceiptIssuerError);
+      assert.match(error.message, /must use https/);
+      return true;
+    },
+  );
+});
+
 test("flipped payload byte fails signature verification", async () => {
   const { receipt } = await signReceipt(await baseClaims());
   const [protectedSegment, payloadSegment, signature] = receipt.split(".");
@@ -284,7 +453,8 @@ test("flipped payload byte fails signature verification", async () => {
   payload[payload.length - 2] ^= 1;
   await assert.rejects(
     verifyReceipt(`${protectedSegment}.${b64url(payload)}.${signature}`, {
-      now: NOW, requireAttestation: false,
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
     }),
     ReceiptSignatureError,
   );
@@ -297,7 +467,10 @@ test("receipt signed by a key other than header jwk fails", async () => {
     signingKey: await keypair(),
   });
   await assert.rejects(
-    verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptSignatureError,
   );
 });
@@ -309,7 +482,10 @@ test("edited claim with stale signature fails", async () => {
   claims.model.selected = "tampered";
   const edited = `${protectedSegment}.${b64url(enc(JSON.stringify(claims)))}.${signature}`;
   await assert.rejects(
-    verifyReceipt(edited, { now: NOW, requireAttestation: false }),
+    verifyReceipt(edited, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptSignatureError,
   );
 });
@@ -319,7 +495,10 @@ test("wrong kid fails header check before signature", async () => {
     headerUpdates: { kid: await digest(enc("wrong")) },
   });
   await assert.rejects(
-    verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptHeaderError,
   );
 });
@@ -328,7 +507,10 @@ test("stream byte flip fails response hash", async () => {
   const { receipt, stream } = await streamReceipt();
   const tampered = enc(new TextDecoder().decode(stream).replace("hello", "jello"));
   await assert.rejects(
-    verifyReceipt(receipt, { responseStream: tampered, now: NOW }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      requestBody: enc("request"), responseStream: tampered, now: NOW,
+    }),
     ReceiptHashError,
   );
 });
@@ -342,7 +524,10 @@ test("receipt must be the last data event before DONE", async () => {
     ),
   );
   await assert.rejects(
-    verifyReceipt(receipt, { responseStream: tampered, now: NOW }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      requestBody: enc("request"), responseStream: tampered, now: NOW,
+    }),
     /receipt is not the last data event/,
   );
 });
@@ -350,7 +535,10 @@ test("receipt must be the last data event before DONE", async () => {
 test("stream events claim is exact", async () => {
   const { receipt, stream } = await streamReceipt({ events: 2 });
   await assert.rejects(
-    verifyReceipt(receipt, { responseStream: stream, now: NOW }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      requestBody: enc("request"), responseStream: stream, now: NOW,
+    }),
     /events check failed/,
   );
 });
@@ -360,7 +548,10 @@ test("future iat fails", async () => {
   claims.iat = NOW + 61;
   const { receipt } = await signReceipt(claims);
   await assert.rejects(
-    verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptTimeError,
   );
 });
@@ -369,9 +560,11 @@ test("maxAgeSeconds rejects an old receipt", async () => {
   const { receipt } = await signReceipt(await baseClaims());
   await assert.rejects(
     verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
       now: NOW + 11,
       maxAgeSeconds: 10,
       requireAttestation: false,
+      requireBindings: false,
     }),
     ReceiptTimeError,
   );
@@ -382,7 +575,10 @@ test("expired tee-verified window fails", async () => {
   claims.upstream.verification_expires_at = NOW;
   const { receipt } = await signReceipt(claims);
   await assert.rejects(
-    verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptUpstreamError,
   );
 });
@@ -391,7 +587,9 @@ test("nonce mismatch fails", async () => {
   const { receipt } = await signReceipt(await baseClaims());
   await assert.rejects(
     verifyReceipt(receipt, {
-      expectedNonce: "different", now: NOW, requireAttestation: false,
+      expectedIssuer: EXPECTED_ISSUER,
+      expectedNonce: "different", now: NOW,
+      requireAttestation: false, requireBindings: false,
     }),
     ReceiptNonceError,
   );
@@ -406,7 +604,10 @@ for (const kind of ["aws-nitro-cose", "azure-maa-jwt"]) {
       headerUpdates: { att_kind: kind },
     });
     await assert.rejects(
-      verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+      verifyReceipt(receipt, {
+        expectedIssuer: EXPECTED_ISSUER,
+        now: NOW, requireAttestation: false, requireBindings: false,
+      }),
       UnsupportedAttestationError,
     );
   });
@@ -414,7 +615,14 @@ for (const kind of ["aws-nitro-cose", "azure-maa-jwt"]) {
 
 test("missing attestation throws by default", async () => {
   const { receipt } = await signReceipt(await baseClaims());
-  await assert.rejects(verifyReceipt(receipt, { now: NOW }), MissingAttestationError);
+  await assert.rejects(
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireBindings: false,
+    }),
+    MissingAttestationError,
+  );
 
   const claims = await baseClaims();
   delete claims.att_sha256;
@@ -423,7 +631,10 @@ test("missing attestation throws by default", async () => {
     headerUpdates: { att: null, att_kind: null },
   });
   await assert.rejects(
-    verifyReceipt(flattened, { now: NOW, requireAttestation: false }),
+    verifyReceipt(flattened, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     MissingAttestationError,
   );
 });
@@ -434,14 +645,20 @@ test("duplicate JSON members are rejected in flattened, header, and claims JSON"
     payloadText: `${JSON.stringify(claims).slice(0, -1)},"rv":1}`,
   });
   await assert.rejects(
-    verifyReceipt(receipt, { now: NOW, requireAttestation: false }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptStructureError,
   );
 
   const flattened = JSON.stringify((await signReceipt(claims, { flattened: true })).receipt);
   const duplicateFlattened = `${flattened.slice(0, -1)},"payload":"duplicate"}`;
   await assert.rejects(
-    verifyReceipt(duplicateFlattened, { now: NOW }),
+    verifyReceipt(duplicateFlattened, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireBindings: false,
+    }),
     ReceiptStructureError,
   );
 
@@ -449,7 +666,10 @@ test("duplicate JSON members are rejected in flattened, header, and claims JSON"
     serializeHeader: (header) => `${JSON.stringify(header).slice(0, -1)},"alg":"EdDSA"}`,
   });
   await assert.rejects(
-    verifyReceipt(duplicateHeader, { now: NOW, requireAttestation: false }),
+    verifyReceipt(duplicateHeader, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW, requireAttestation: false, requireBindings: false,
+    }),
     ReceiptStructureError,
   );
 });
@@ -467,7 +687,11 @@ test("GCP attestation verification receives the domain-separated key commitment"
     const claims = await baseClaims();
     delete claims.att_sha256;
     const { receipt, key } = await signReceipt(claims, { flattened: true });
-    const verified = await verifyReceipt(receipt, { now: NOW });
+    const verified = await verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireBindings: false,
+    });
     const publicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", key.publicKey));
     const commitment = await crypto.subtle.digest(
       "SHA-256",
@@ -479,6 +703,61 @@ test("GCP attestation verification receives the domain-separated key commitment"
     assert.equal(verified.attestationStatus, "verified");
     assert.equal(new TextDecoder().decode(seen.document), "fake.jwt.token");
     assert.deepEqual(seen.options, { policy, keyCommitmentHex: expectedHex });
+  } finally {
+    receiptVerificationDependencies.policyFromTrustRelease = originalPolicy;
+    receiptVerificationDependencies.verifyReceiptKeyAttestation = originalVerify;
+  }
+});
+
+test("receipt issuer is never used to fetch verification material", async () => {
+  const hostileIssuer = "https://evil.example";
+  const receiptKey = await keypair();
+  const commitment = await receiptKeyCommitment(receiptKey);
+  const commitmentHex = [...commitment]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  const attestationKey = await rsaKeypair();
+  const document = await gcpKeyAttestation(attestationKey, [commitmentHex]);
+  const jwks = await gcpJwks(attestationKey);
+  const policy = {
+    audience: "quill-cloud",
+    imageDigest: "sha256:abc123",
+    imageReference: null,
+  };
+  const claims = await baseClaims();
+  claims.iss = hostileIssuer;
+  delete claims.att_sha256;
+  const { receipt } = await signReceipt(claims, {
+    key: receiptKey,
+    flattened: true,
+    headerUpdates: { att: new TextDecoder().decode(document) },
+  });
+  const requestedUrls = [];
+  const guardedFetch = async (url) => {
+    requestedUrls.push(String(url));
+    if (new URL(url).hostname === new URL(hostileIssuer).hostname) {
+      assert.fail("receipt issuer was dereferenced for verification material");
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => jwks,
+    };
+  };
+  const originalPolicy = receiptVerificationDependencies.policyFromTrustRelease;
+  const originalVerify = receiptVerificationDependencies.verifyReceiptKeyAttestation;
+  receiptVerificationDependencies.policyFromTrustRelease = async () => policy;
+  receiptVerificationDependencies.verifyReceiptKeyAttestation = (attestation, options) => (
+    verifyReceiptKeyAttestation(attestation, { ...options, fetchImpl: guardedFetch })
+  );
+  try {
+    const verified = await verifyReceipt(receipt, {
+      expectedIssuer: hostileIssuer,
+      now: NOW,
+      requireBindings: false,
+    });
+    assert.equal(verified.iss, hostileIssuer);
+    assert.deepEqual(requestedUrls, [GCP_JWKS_URI]);
   } finally {
     receiptVerificationDependencies.policyFromTrustRelease = originalPolicy;
     receiptVerificationDependencies.verifyReceiptKeyAttestation = originalVerify;
@@ -511,7 +790,11 @@ for (const commitmentPosition of [0, 2]) {
     });
 
     await withGcpReceiptVerifier({ jwks, policy }, async () => {
-      const verified = await verifyReceipt(receipt, { now: NOW });
+      const verified = await verifyReceipt(receipt, {
+        expectedIssuer: EXPECTED_ISSUER,
+        now: NOW,
+        requireBindings: false,
+      });
       assert.equal(verified.attestationStatus, "verified");
     });
 
@@ -542,7 +825,11 @@ test("receipt key binding rejects the wrong commitment", async () => {
   });
 
   await withGcpReceiptVerifier({ jwks, policy }, () => assert.rejects(
-    verifyReceipt(receipt, { now: NOW }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      now: NOW,
+      requireBindings: false,
+    }),
     /not present in JWT nonces/,
   ));
 });
@@ -569,13 +856,23 @@ test("compact receipt verifies a supplied pinned attestation and rejects a one-b
   const { receipt } = await signReceipt(claims, { key: receiptKey });
 
   await withGcpReceiptVerifier({ jwks, policy }, async () => {
-    const verified = await verifyReceipt(receipt, { attestation: document, now: NOW });
+    const verified = await verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      attestation: document,
+      now: NOW,
+      requireBindings: false,
+    });
     assert.equal(verified.attestationStatus, "verified");
 
     const changed = new Uint8Array(document);
     changed[changed.length - 1] ^= 1;
     await assert.rejects(
-      verifyReceipt(receipt, { attestation: changed, now: NOW }),
+      verifyReceipt(receipt, {
+        expectedIssuer: EXPECTED_ISSUER,
+        attestation: changed,
+        now: NOW,
+        requireBindings: false,
+      }),
       /att_sha256 check failed/,
     );
   });
@@ -601,7 +898,12 @@ test("flattened receipt rejects mismatched supplied attestation bytes", async ()
   });
 
   await assert.rejects(
-    verifyReceipt(receipt, { attestation: join(document, enc("x")), now: NOW }),
+    verifyReceipt(receipt, {
+      expectedIssuer: EXPECTED_ISSUER,
+      attestation: join(document, enc("x")),
+      now: NOW,
+      requireBindings: false,
+    }),
     ReceiptAttestationError,
   );
 });
@@ -614,7 +916,10 @@ test("multi-line data and unknown SSE fields fail verification", async () => {
     text.replace("data: {\"choices\"", "id: 1\ndata: {\"choices\""),
   ]) {
     await assert.rejects(
-      verifyReceipt(receipt, { responseStream: enc(tampered), now: NOW }),
+      verifyReceipt(receipt, {
+        expectedIssuer: EXPECTED_ISSUER,
+        requestBody: enc("request"), responseStream: enc(tampered), now: NOW,
+      }),
       ReceiptHashError,
     );
   }
@@ -633,5 +938,9 @@ test("ReceiptCapture preserves exact async chunks, discovers, and verifies recei
   assert.deepEqual(join(...consumed), stream);
   assert.deepEqual(capture.capturedBytes, stream);
   assert.deepEqual(capture.receipt, receipt);
-  assert.equal((await capture.verify({ now: NOW })).jti, "chatcmpl-test");
+  assert.equal((await capture.verify({
+    expectedIssuer: EXPECTED_ISSUER,
+    requestBody: enc("request"),
+    now: NOW,
+  })).jti, "chatcmpl-test");
 });

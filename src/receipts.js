@@ -28,6 +28,8 @@ export class ReceiptStructureError extends ReceiptVerificationError {}
 export class ReceiptHeaderError extends ReceiptVerificationError {}
 export class ReceiptSignatureError extends ReceiptVerificationError {}
 export class ReceiptClaimsError extends ReceiptVerificationError {}
+export class MissingBindingError extends ReceiptClaimsError {}
+export class ReceiptIssuerError extends ReceiptClaimsError {}
 export class ReceiptTimeError extends ReceiptClaimsError {}
 export class ReceiptNonceError extends ReceiptClaimsError {}
 export class ReceiptUpstreamError extends ReceiptClaimsError {}
@@ -458,6 +460,74 @@ function optionalString(claims, name, family = "claims") {
   return value;
 }
 
+function canonicalHttpsOrigin(value, check) {
+  if (typeof value !== "string" || !value) {
+    throw new ReceiptIssuerError(
+      `${check} check failed: required HTTPS origin is missing`,
+    );
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    throw new ReceiptIssuerError(
+      `${check} check failed: invalid HTTPS origin`,
+      { cause: error },
+    );
+  }
+  if (parsed.protocol.toLowerCase() !== "https:") {
+    throw new ReceiptIssuerError(`${check} check failed: issuer origin must use https`);
+  }
+  if (
+    !parsed.hostname ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new ReceiptIssuerError(
+      `${check} check failed: expected an origin with no path, query, or fragment`,
+    );
+  }
+  const canonical = `https://${parsed.hostname.toLowerCase()}${
+    parsed.port ? `:${parsed.port}` : ""
+  }`;
+  const normalizedInput = value.endsWith("/") ? value.slice(0, -1) : value;
+  const loweredInput = normalizedInput.toLowerCase();
+  const defaultPortInput = `${canonical}:443`;
+  if (loweredInput !== canonical && loweredInput !== defaultPortInput) {
+    throw new ReceiptIssuerError(`${check} check failed: invalid HTTPS origin`);
+  }
+  return canonical;
+}
+
+function requireTrafficBindings({
+  requestBody,
+  responseBody,
+  responseStream,
+  requireBindings,
+}) {
+  if (requireBindings === false) return;
+  const missingRequest = requestBody === null || requestBody === undefined;
+  const missingResponse =
+    (responseBody === null || responseBody === undefined) &&
+    (responseStream === null || responseStream === undefined);
+  if (missingRequest && missingResponse) {
+    throw new MissingBindingError(
+      "receipt binding check failed: missing requestBody and responseBody or responseStream",
+    );
+  }
+  if (missingRequest) {
+    throw new MissingBindingError("receipt binding check failed: missing requestBody");
+  }
+  if (missingResponse) {
+    throw new MissingBindingError(
+      "receipt binding check failed: missing responseBody or responseStream",
+    );
+  }
+}
+
 function integer(value, check, ErrorType) {
   if (!Number.isSafeInteger(value)) {
     throw new ErrorType(`${check} check failed: expected an integer`);
@@ -793,6 +863,12 @@ async function attestationStatus(
 /**
  * Verify a compact or flattened inference receipt and return its v1 claims.
  *
+ * `expectedIssuer` pins the receipt to an HTTPS origin after normalizing the
+ * scheme and host case, default port, and one trailing slash. Request bytes
+ * and exactly one response representation are required by default so the
+ * signed digests are bound to the caller's traffic. `requireBindings: false`
+ * explicitly permits signature-only or partial binding inspection.
+ *
  * Compact receipts cannot carry their attestation document. Pass its exact
  * bytes as `attestation` to check the pinned digest and verify the receipt-key
  * binding. `requireAttestation: false` is an explicit signature-and-hashes-only
@@ -800,6 +876,7 @@ async function attestationStatus(
  * verify their embedded evidence; a supplied `attestation` must match it.
  */
 export async function verifyReceipt(receipt, {
+  expectedIssuer,
   requestBody = null,
   responseBody = null,
   responseStream = null,
@@ -808,7 +885,15 @@ export async function verifyReceipt(receipt, {
   now = null,
   attestation = null,
   requireAttestation = true,
-} = {}) {
+  requireBindings = true,
+}) {
+  requireTrafficBindings({
+    requestBody,
+    responseBody,
+    responseStream,
+    requireBindings,
+  });
+  const canonicalExpectedIssuer = canonicalHttpsOrigin(expectedIssuer, "expectedIssuer");
   const envelope = parseEnvelope(receipt);
   const { header, publicKey } = await parseHeader(envelope);
   const payloadBytes = await verifySignature(envelope, publicKey);
@@ -830,6 +915,14 @@ export async function verifyReceipt(receipt, {
   if (!Number.isSafeInteger(payload.rv) || payload.rv !== 1) {
     throw new ReceiptClaimsError(
       `rv claim check failed: expected integer 1, got ${repr(payload.rv)}`,
+    );
+  }
+
+  const iss = requiredString(payload, "iss");
+  const canonicalIssuer = canonicalHttpsOrigin(iss, "iss claim");
+  if (!equalStrings(canonicalIssuer, canonicalExpectedIssuer)) {
+    throw new ReceiptIssuerError(
+      `iss claim check failed: expected ${repr(canonicalExpectedIssuer)}, got ${repr(canonicalIssuer)}`,
     );
   }
 
@@ -985,7 +1078,6 @@ export async function verifyReceipt(receipt, {
     }
   }
 
-  const iss = requiredString(payload, "iss");
   const jti = requiredString(payload, "jti");
   const gen = optionalString(payload, "gen");
   const route = requiredString(payload, "route");
@@ -1093,7 +1185,7 @@ export class ReceiptCapture {
     }
   }
 
-  async verify(options = {}) {
+  async verify(options) {
     if (this._receipt === null) this._refreshReceipt();
     if (this._receipt === null) {
       throw new ReceiptStructureError(

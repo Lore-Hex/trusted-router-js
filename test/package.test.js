@@ -52,6 +52,8 @@ register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loaderSourc
 const root = await import("./src/index.js");
 if (typeof root.TrustedRouter !== "function") throw new Error("missing TrustedRouter");
 if (typeof root.verifyReceipt !== "function") throw new Error("missing verifyReceipt");
+if (typeof root.MissingBindingError !== "function") throw new Error("missing MissingBindingError");
+if (typeof root.ReceiptIssuerError !== "function") throw new Error("missing ReceiptIssuerError");
 if ("verifyGatewaySession" in root) throw new Error("session verifier is exported from root");
 `;
   await execFileAsync(process.execPath, ["--input-type=module", "-e", script], { cwd: root });

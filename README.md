@@ -442,11 +442,19 @@ workload image:
 import { verifyReceipt } from "@lore-hex/trusted-router/receipts";
 
 const verified = await verifyReceipt(compactReceipt, {
+  expectedIssuer: "https://api.trustedrouter.com",
   requestBody,
   responseBody,
   attestation: receiptAttestationBytes,
 });
 ```
+
+`expectedIssuer` is required and pins the signed `iss` claim after HTTPS-origin
+normalization. Verification also requires both `requestBody` and either
+`responseBody` or `responseStream` by default; missing traffic throws a typed
+`MissingBindingError`. Use `requireBindings: false` only for explicit
+signature-only inspection where binding the receipt to caller-held traffic is
+not intended.
 
 Compact receipts contain an `att_sha256` claim instead of carrying the full
 attestation document. Supply the exact document bytes with `attestation`; the
