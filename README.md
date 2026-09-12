@@ -235,6 +235,12 @@ verifier, and deliberately omits any existing bearer key.
 
 ## Sign in with TrustedRouter
 
+Profile-scoped identities may include `company_affiliations`, a typed array of
+company name, funding organization, domain, optional founding year, and source
+evidence. These are exact verified-email domain matches to company directories,
+not employment verification or investor endorsement. Missing claims and null
+founding years are normal; never require an affiliation for general sign-in.
+
 For browser SPAs, `BrowserOAuthFlow` (from `@lore-hex/trusted-router/oauth`)
 wraps the lower-level helpers above: `initiate(...)` builds the authorize URL
 and stashes `{ state, codeVerifier }` in `sessionStorage`, and

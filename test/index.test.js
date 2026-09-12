@@ -264,6 +264,16 @@ test("userInfo GETs /auth/userinfo with the instance bearer key", async () => {
     wallet_address: "0xabc",
     workspace_id: "ws_1",
     created_at: "2026-06-07T00:00:00Z",
+    company_affiliations: [{
+      company_name: "Example Company",
+      funding_organization: "Y Combinator",
+      relationship: "accelerator",
+      domain: "example.com",
+      founding_year: null,
+      source_url: "https://www.ycombinator.com/companies/example",
+      checked_at: "2026-09-12T00:00:00+00:00",
+      match_method: "verified_email_domain",
+    }],
   };
   const client = new TrustedRouter({
     apiKey: "sk-tr-v1-delegated",
