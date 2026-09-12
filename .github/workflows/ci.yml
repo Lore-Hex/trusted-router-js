@@ -15,4 +15,6 @@ jobs:
         with:
           node-version: "20"
       - run: npm run check
+      - name: Typecheck public company affiliation metadata
+        run: npx --yes --package typescript@5.9.2 tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext type-tests/company-affiliations.ts
       - run: npm test

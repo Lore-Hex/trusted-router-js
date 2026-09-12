@@ -502,22 +502,30 @@ export interface OAuthKeyExchangeResponse {
   data: Record<string, unknown>;
 }
 
+/** A sourced email-domain match, not proof of employment or investor endorsement. */
+export interface CompanyAffiliation {
+  company_name: string;
+  funding_organization: string;
+  relationship: string;
+  domain: string;
+  founding_year: number | null;
+  source_url: string;
+  checked_at: string;
+  match_method: string;
+}
+
 export interface OAuthIdentity {
   sub: string;
   email?: string | null;
   email_verified?: boolean | null;
   wallet_address?: string | null;
+  company_affiliations?: CompanyAffiliation[];
   [extra: string]: unknown;
 }
 
-export interface UserInfoData {
-  sub: string;
-  email?: string | null;
-  email_verified?: boolean | null;
-  wallet_address?: string | null;
+export interface UserInfoData extends OAuthIdentity {
   workspace_id?: string | null;
   created_at?: string | null;
-  [extra: string]: unknown;
 }
 
 export interface UserInfoResponse {
