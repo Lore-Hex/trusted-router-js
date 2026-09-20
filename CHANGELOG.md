@@ -1,6 +1,63 @@
 # Changelog
 
-## 0.8.0 — Unreleased
+## 0.9.0 — 2026-09-20
+
+### Added
+
+- Offline signed inference receipt verification: `verifyReceipt()` accepts a
+  compact or flattened JWS and fails closed with typed errors — structure
+  (duplicate JSON members rejected at every depth), header, Ed25519 signature
+  via WebCrypto (Node 20+), `rv`/`iat` (60 s future skew, optional max age),
+  nonce, tee-verified claims, and both captured-stream hash domains.
+  `ReceiptCapture` preserves exact wire bytes from a streaming response so the
+  hash is recomputed over what the client actually received. GCP attestation
+  chains verify through the existing gateway verifier with the receipt-key
+  commitment checked by nonce set membership; other attestation kinds throw
+  `UnsupportedAttestationError` rather than skipping. The enclave-generated
+  parity fixtures are byte-identical across all six SDKs.
+- Receipt-key attestation binding mode: compact receipts verify fully when the
+  caller supplies the attestation document pinned by `att_sha256`; flattened
+  receipts must match their embedded document. The live-gateway path and its
+  TLS-channel requirements are unchanged.
+- `CompanyAffiliation` declarations on `OAuthIdentity` and userinfo, preserved
+  at runtime and enforced by a compiler fixture in CI.
+- The package now ships TypeScript declaration maps and `src/`, so
+  go-to-definition in a consumer's editor lands in readable source; a
+  `./package.json` export; `sideEffects` declared so a `VERSION`-only import
+  tree-shakes to a few hundred bytes.
+
+### Changed
+
+- **Receipt verification fails closed by default**: request and response
+  bindings are required unless `requireBindings: false` is passed explicitly,
+  the issuer must be pinned to a canonical HTTPS origin, and the receipt's
+  `iss` is never followed. `VerifyReceiptOptions` is a discriminated union
+  that makes the binding requirement a type error to omit.
+- The SDK is now authored in TypeScript and published from `dist/` with
+  generated declarations. Runtime behaviour, the ESM-only exports map, the
+  CLI, and the zero-dependency policy are unchanged; the hand-written
+  declarations are gone.
+- Boundary audit: every value that enters from the wire, storage, argv, or
+  env is validated before use and prototype keys behave as unknown. Public
+  types were corrected where they contradicted the producer:
+  `OAuthKeyExchangeResponse.data` is optional (minimal exchange responses omit
+  it) and `UserInfoData.sub` is `string | null` (legacy ownerless keys). The
+  key exchange requires only `key`; unknown fields pass through.
+- Fixed four latent defects the port surfaced: telemetry OS classification
+  matched prototype keys; CLI command lookup honoured inherited properties;
+  `defaultHeaders` given as a `Headers` instance or tuple array were dropped
+  or mis-merged; attestation image pins from trust material were accepted
+  without shape validation (now fail-closed, validated against production
+  trust records).
+- `ReceiptCapture` validates the embedded receipt envelope before exposing
+  it, and restored browser OAuth state is validated before use.
+
+### Internal
+
+- Type-aware ESLint gate, a 50-mutation fails-without-fix gate, CLI coverage
+  of every command and option, and a packed-consumer test run in CI.
+
+## 0.8.0 — 2026-08-24
 
 - Added the official `trustedrouter` CLI to the npm package. It delegates to
   the SDK for chat, catalog, trust-release, and attestation operations instead

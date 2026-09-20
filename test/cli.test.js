@@ -139,10 +139,10 @@ test("help, version, and no-command behavior follow the shared contract", async 
   assert.deepEqual(JSON.parse(version.stdout), {
     ok: true,
     command: "version",
-    data: { version: "0.8.0" },
+    data: { version: "0.9.0" },
   });
   const plainVersion = await invoke(["--version"], { dependencies });
-  assert.equal(plainVersion.stdout, "trustedrouter 0.8.0\n");
+  assert.equal(plainVersion.stdout, "trustedrouter 0.9.0\n");
   assert.equal(constructed, 0);
 });
 
@@ -633,7 +633,7 @@ for (const [command, method, data] of [
     for (const flag of ["--version", "-V"]) {
       const version = await invoke([command, flag, "--json"]);
       assert.equal(version.code, EXIT_SUCCESS);
-      assert.deepEqual(JSON.parse(version.stdout), { ok: true, command: "version", data: { version: "0.8.0" } });
+      assert.deepEqual(JSON.parse(version.stdout), { ok: true, command: "version", data: { version: "0.9.0" } });
       assert.deepEqual(version.clientOptions, []);
     }
     const plain = await invoke([command, ...operands], { env: API_KEY_ENV });

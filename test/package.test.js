@@ -22,7 +22,7 @@ function npmEnvironment(cacheDir) {
 test("package manifest is configured for a public Apache-2.0 npm release", async () => {
   const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(pkg.name, "@lore-hex/trusted-router");
-  assert.equal(pkg.version, "0.8.0");
+  assert.equal(pkg.version, "0.9.0");
   assert.equal(pkg.license, "Apache-2.0");
   assert.equal(Object.hasOwn(pkg, "dependencies"), false);
   assert.deepEqual(pkg.bin, { trustedrouter: "./dist/cli.js" });
@@ -78,7 +78,7 @@ test("the packaged bin entrypoint resolves and reports the package version", asy
     [path.join(root, "dist/cli.js"), "--version"],
     { cwd: root },
   );
-  assert.equal(stdout, "trustedrouter 0.8.0\n");
+  assert.equal(stdout, "trustedrouter 0.9.0\n");
   assert.equal(stderr, "");
 });
 
@@ -104,7 +104,7 @@ test("npm exec infers the single trustedrouter bin from a packed package", async
         env: npmEnvironment(cacheDir),
       },
     );
-    assert.equal(stdout, "trustedrouter 0.8.0\n");
+    assert.equal(stdout, "trustedrouter 0.9.0\n");
     assert.equal(stderr, "");
   } finally {
     await rm(tempDir, { force: true, recursive: true });
@@ -181,7 +181,7 @@ test("packed consumer resolves declarations to shipped source and tree-shakes VE
       }
     }
     const { stdout: metadata } = await execFileAsync(process.execPath, ["--input-type=module", "-e", 'import pkg from "@lore-hex/trusted-router/package.json" with { type: "json" }; console.log(pkg.version)'], { cwd: tempDir });
-    assert.equal(metadata.trim(), "0.8.0");
+    assert.equal(metadata.trim(), "0.9.0");
 
     const { build } = await import("esbuild");
     const bundle = async () => build({ entryPoints: [path.join(tempDir, "consumer.ts")], bundle: true, platform: "browser", format: "esm", write: false, metafile: true });
