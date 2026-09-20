@@ -21,7 +21,7 @@ export { DEFAULT_TRUST_RELEASE_URL };
 export async function fetchTrustRelease({
   trustUrl = DEFAULT_TRUST_RELEASE_URL,
   fetchImpl = globalThis.fetch,
-}: { trustUrl?: string; fetchImpl?: typeof globalThis.fetch } = {}) {
+}: { trustUrl?: string; fetchImpl?: typeof globalThis.fetch } = {}): Promise<Record<string, unknown>> {
   if (!fetchImpl) {
     throw new Error("A fetch implementation is required");
   }
@@ -31,7 +31,7 @@ export async function fetchTrustRelease({
       credentials: "omit",
       redirect: "manual",
     }),
-  );
+  ) as Promise<Record<string, unknown>>;
 }
 
 export const trustRelease = fetchTrustRelease;

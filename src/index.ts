@@ -1,4 +1,93 @@
-export declare const VERSION: string;
+/**
+ * TrustedRouter JavaScript SDK — public barrel (L9).
+ *
+ * OpenAI-compatible client for https://api.trustedrouter.com/v1. Mirrors
+ * the Python SDK's surface so multi-language teams stay in sync: typed
+ * errors, automatic retries with backoff, apex load-balancer failover,
+ * per-call extras (extraHeaders/idempotencyKey/timeout/apiKey/workspaceId),
+ * and messages/activity wrappers.
+ *
+ * This file is a pure re-export shim over src/client.js and src/internal/*;
+ * every name importable before the internal restructure keeps working.
+ * Implementation layers: internal/transport.js (policy kernel + candidate
+ * set + THE retry/failover engine + attempt assembly), internal/sse.js
+ * (stream codec), internal/errors.js (error taxonomy), internal/models.js +
+ * internal/orchestration.js (constants and tool builders), internal/pkce.js
+ * (browser OAuth), internal/trust.js (trust-release fetch),
+ * internal/telemetry.js + internal/beacon.js (content-free client
+ * reliability telemetry: the x-tr-client header and the beacon channel).
+ *
+ * Attestation verification (`verifyGatewayAttestation`) lives in
+ * ./attestation.js. TLS session pinning lives in the Node-only
+ * @lore-hex/trusted-router/session subpath so browser root imports do not
+ * pull Node built-ins.
+ */
+
+import type { ProviderPreferences } from "./internal/models.js";
+
+export { TrustedRouter } from "./client.js";
+export {
+  AuthenticationError,
+  BadRequestError,
+  EndpointNotSupportedError,
+  InternalError,
+  NotFoundError,
+  PermissionDeniedError,
+  RateLimitError,
+  TrustedRouterError,
+} from "./internal/errors.js";
+export {
+  ADVISOR_MODEL,
+  ALIAS_API_BASE_URLS,
+  ATHENA_MODEL,
+  AUTO_MODEL,
+  CONFIDENTIAL_MODEL,
+  DEFAULT_API_BASE_URL,
+  DEFAULT_CONTROL_BASE_URL,
+  DEFAULT_REGION_PROBE_TIMEOUT_MS,
+  DEFAULT_STATUS_URL,
+  DEFAULT_TRUST_RELEASE_URL,
+  E2E_MODEL,
+  EU_MODEL,
+  FAST_MODEL,
+  FUSION_FREEDOM_FALLBACK_JUDGES,
+  FUSION_FREEDOM_PANEL,
+  FUSION_MODEL,
+  MAP_REDUCE_MODEL,
+  PROMETHEUS_MODEL,
+  ProviderPreferences,
+  REGION_BASE_URLS,
+  SELECTOR_MODEL,
+  SOCRATES_MODEL,
+  SUBAGENT_MODEL,
+  SYNTH_MODEL,
+  US_MODEL,
+  VERSION,
+  ZDR_MODEL,
+  ZEUS_MODEL,
+} from "./internal/models.js";
+export {
+  advisorTool,
+  fusionTool,
+  mapReduceTool,
+  selectorTool,
+  subagentTool,
+} from "./internal/orchestration.js";
+export { createOAuthPkcePair, randomOAuthState } from "./internal/pkce.js";
+export { collectCompletion } from "./internal/sse.js";
+export {
+  DEFAULT_TELEMETRY_PATH,
+  TELEMETRY_ENDPOINTS,
+  TELEMETRY_ERROR_CLASSES,
+  TELEMETRY_FINAL_OUTCOMES,
+  TELEMETRY_HOSTS,
+  TELEMETRY_LATENCY_BUCKETS,
+  TELEMETRY_OUTCOMES,
+  TELEMETRY_SCHEMA_VERSION,
+  TELEMETRY_TIMEOUT_PHASES,
+  resolveTelemetryEnabled,
+} from "./internal/telemetry.js";
+export { fetchTrustRelease, trustRelease } from "./internal/trust.js";
 export {
   MissingAttestationError,
   MissingBindingError,
@@ -17,6 +106,7 @@ export {
   UnsupportedAttestationError,
   verifyReceipt,
 } from "./receipts.js";
+
 export type {
   FlattenedReceiptJws,
   ReceiptAttestationStatus,
@@ -28,53 +118,6 @@ export type {
   ReceiptUpstreamClaims,
   VerifyReceiptOptions,
 } from "./receipts.js";
-export declare const DEFAULT_API_BASE_URL: "https://api.trustedrouter.com/v1";
-export declare const DEFAULT_CONTROL_BASE_URL: "https://trustedrouter.com/v1";
-export declare const DEFAULT_TRUST_RELEASE_URL: "https://trust.trustedrouter.com/trust/gcp-release.json";
-export declare const DEFAULT_STATUS_URL: "https://status.trustedrouter.com/status.json";
-export declare const DEFAULT_REGION_PROBE_TIMEOUT_MS: 1500;
-export declare const REGION_BASE_URLS: ReadonlyArray<string>;
-export declare const ALIAS_API_BASE_URLS: ReadonlyArray<string>;
-export declare const AUTO_MODEL: "trustedrouter/auto";
-export declare const FAST_MODEL: "trustedrouter/fast";
-export declare const ZDR_MODEL: "trustedrouter/zdr";
-export declare const E2E_MODEL: "trustedrouter/e2e";
-export declare const CONFIDENTIAL_MODEL: "trustedrouter/confidential";
-export declare const EU_MODEL: "trustedrouter/eu";
-export declare const US_MODEL: "trustedrouter/us";
-export declare const FUSION_MODEL: "trustedrouter/fusion";
-export declare const SYNTH_MODEL: "trustedrouter/synth";
-export declare const ADVISOR_MODEL: "trustedrouter/advisor";
-export declare const SELECTOR_MODEL: "trustedrouter/selector";
-export declare const MAP_REDUCE_MODEL: "trustedrouter/mapreduce";
-export declare const SUBAGENT_MODEL: "trustedrouter/subagent";
-export declare const SOCRATES_MODEL: "trustedrouter/socrates-1.1";
-export declare const PROMETHEUS_MODEL: "trustedrouter/prometheus-2.0";
-export declare const ZEUS_MODEL: "trustedrouter/zeus-1.0";
-export declare const ATHENA_MODEL: "trustedrouter/athena";
-export declare const FUSION_FREEDOM_PANEL: ReadonlyArray<string>;
-export declare const FUSION_FREEDOM_FALLBACK_JUDGES: ReadonlyArray<string>;
-
-// ---- client telemetry (contract v1) --------------------------------------
-
-export declare const TELEMETRY_SCHEMA_VERSION: 1;
-export declare const DEFAULT_TELEMETRY_PATH: "/client-events";
-export declare const TELEMETRY_HOSTS: ReadonlyArray<string>;
-export declare const TELEMETRY_ENDPOINTS: ReadonlyArray<string>;
-export declare const TELEMETRY_OUTCOMES: ReadonlyArray<string>;
-export declare const TELEMETRY_FINAL_OUTCOMES: ReadonlyArray<string>;
-export declare const TELEMETRY_ERROR_CLASSES: ReadonlyArray<string>;
-export declare const TELEMETRY_TIMEOUT_PHASES: ReadonlyArray<string>;
-export declare const TELEMETRY_LATENCY_BUCKETS: ReadonlyArray<string>;
-
-export declare function resolveTelemetryEnabled(
-  explicit: boolean | null | undefined,
-  options: {
-    baseUrl: string;
-    controlBaseUrl: string;
-    environ: Record<string, string | undefined>;
-  },
-): boolean;
 
 export type FusionSelectionStrategy =
   | "synthesize"
@@ -102,8 +145,6 @@ export interface FusionTool {
   parameters: Record<string, unknown>;
 }
 
-export declare function fusionTool(options?: FusionToolOptions): FusionTool;
-
 export interface AdvisorToolOptions {
   enabled?: boolean | null;
   depth?: number | null;
@@ -121,8 +162,6 @@ export interface AdvisorTool {
   parameters: Record<string, unknown>;
 }
 
-export declare function advisorTool(options?: AdvisorToolOptions): AdvisorTool;
-
 export interface SelectorToolOptions {
   enabled?: boolean | null;
   analysisModels?: string[] | null;
@@ -130,11 +169,11 @@ export interface SelectorToolOptions {
   selectorPrompt?: string | null;
   maxCompletionTokens?: number | null;
 }
+
 export interface SelectorTool {
   type: "trustedrouter:selector";
   parameters: Record<string, unknown>;
 }
-export declare function selectorTool(options?: SelectorToolOptions): SelectorTool;
 
 export interface MapReduceToolOptions {
   enabled?: boolean | null;
@@ -147,11 +186,11 @@ export interface MapReduceToolOptions {
   reducerPrompt?: string | null;
   maxCompletionTokens?: number | null;
 }
+
 export interface MapReduceTool {
   type: "trustedrouter:mapreduce";
   parameters: Record<string, unknown>;
 }
-export declare function mapReduceTool(options?: MapReduceToolOptions): MapReduceTool;
 
 export interface SubagentToolOptions {
   enabled?: boolean | null;
@@ -165,11 +204,11 @@ export interface SubagentToolOptions {
   reasoning?: unknown;
   tools?: Array<Record<string, unknown>> | null;
 }
+
 export interface SubagentTool {
   type: "trustedrouter:subagent";
   parameters: Record<string, unknown>;
 }
-export declare function subagentTool(options?: SubagentToolOptions): SubagentTool;
 
 export interface ProviderPreferencesOptions {
   order?: string[] | null;
@@ -185,44 +224,11 @@ export interface ProviderPreferencesOptions {
   quantizations?: string[] | null;
   maxPrice?: Record<string, unknown> | null;
 }
-export declare class ProviderPreferences {
-  constructor(options?: ProviderPreferencesOptions);
-  static zdr(): ProviderPreferences;
-  static confidential(): ProviderPreferences;
-  static usOnly(): ProviderPreferences;
-  [key: string]: unknown;
-}
-
-// ---- error hierarchy ----------------------------------------------------
-
-export declare class TrustedRouterError extends Error {
-  statusCode: number;
-  payload: unknown;
-  layer: string | null;
-  source: string | null;
-  provider: string | null;
-  requestId: string | null;
-  constructor(statusCode: number, message: string, payload?: unknown);
-}
-export declare class BadRequestError extends TrustedRouterError {}
-export declare class AuthenticationError extends TrustedRouterError {}
-export declare class PermissionDeniedError extends TrustedRouterError {}
-export declare class NotFoundError extends TrustedRouterError {}
-export declare class EndpointNotSupportedError extends TrustedRouterError {}
-export declare class RateLimitError extends TrustedRouterError {
-  retryAfter: number | null;
-  constructor(
-    statusCode: number,
-    message: string,
-    payload?: unknown,
-    retryAfter?: number | null,
-  );
-}
-export declare class InternalError extends TrustedRouterError {}
 
 // ---- client -------------------------------------------------------------
 
 export type TrustedRouterHeaders = HeadersInit;
+
 export type TrustedRouterFetch = typeof fetch;
 
 export interface TrustedRouterOptions {
@@ -531,122 +537,3 @@ export interface UserInfoData extends OAuthIdentity {
 export interface UserInfoResponse {
   data: UserInfoData;
 }
-
-export declare class TrustedRouter {
-  apiKey: string | null;
-  baseUrl: string;
-  controlBaseUrl: string;
-  fetch: TrustedRouterFetch;
-  defaultHeaders: Record<string, string>;
-  maxRetries: number;
-  regionalFailover: boolean;
-  baseUrls: string[];
-  telemetryEnabled: boolean;
-  telemetrySampleRate: number;
-  constructor(options?: TrustedRouterOptions);
-
-  /**
-   * Flush buffered client telemetry with one bounded attempt (default 2 s)
-   * and stop its worker. Optional: the beacon also flushes once on
-   * `beforeExit`; call this before `process.exit()` or when discarding a
-   * client early.
-   */
-  close(options?: { timeoutMs?: number }): Promise<void>;
-
-  request(
-    method: string,
-    path: string,
-    init?: RequestOptions,
-  ): Promise<Record<string, unknown>>;
-  rawRequest(
-    method: string,
-    path: string,
-    init?: RequestOptions,
-  ): Promise<Response>;
-
-  chatCompletions(req?: ChatRequest): Promise<ChatCompletion>;
-  chatCompletionsChunks(req?: ChatRequest): AsyncIterable<ChatCompletionChunk>;
-  chatCompletionsText(req?: ChatRequest): AsyncIterable<string>;
-  chatCompletionsRawStream(req?: ChatRequest): AsyncIterable<Uint8Array>;
-  fusion(req?: FusionRequest): Promise<ChatCompletion>;
-
-  models(options?: ModelListOptions): Promise<Record<string, unknown>>;
-  providers(): Promise<Record<string, unknown>>;
-  regions(): Promise<Record<string, unknown>>;
-  credits(options?: {
-    workspaceId?: string | null;
-  }): Promise<Record<string, unknown>>;
-  embeddings(req: EmbeddingsRequest): Promise<Record<string, unknown>>;
-  messages(req: MessagesRequest): Promise<Record<string, unknown>>;
-  responses(req: ResponsesRequest): Promise<ResponseObject>;
-  responsesEvents(
-    req: ResponsesRequest,
-  ): AsyncIterable<Record<string, unknown>>;
-  responsesRawStream(req: ResponsesRequest): AsyncIterable<Uint8Array>;
-  responsesInputTokens(req: ResponsesRequest): Promise<ResponseInputTokens>;
-  broadcastDestinations(options?: {
-    workspaceId?: string | null;
-  }): Promise<Record<string, unknown>>;
-  createBroadcastDestination(
-    req: BroadcastDestinationRequest,
-  ): Promise<Record<string, unknown>>;
-  getBroadcastDestination(
-    id: string,
-    options?: { workspaceId?: string | null },
-  ): Promise<Record<string, unknown>>;
-  updateBroadcastDestination(
-    id: string,
-    patch?: Record<string, unknown> & { workspaceId?: string | null },
-  ): Promise<Record<string, unknown>>;
-  deleteBroadcastDestination(
-    id: string,
-    options?: { workspaceId?: string | null },
-  ): Promise<Record<string, unknown>>;
-  testBroadcastDestination(
-    id: string,
-    options?: { workspaceId?: string | null },
-  ): Promise<Record<string, unknown>>;
-  status(url?: string): Promise<Record<string, unknown>>;
-
-  billingCheckout(
-    req: BillingCheckoutRequest,
-  ): Promise<Record<string, unknown>>;
-  stablecoinCheckout(
-    req: Omit<BillingCheckoutRequest, "paymentMethod">,
-  ): Promise<Record<string, unknown>>;
-  authSession(): Promise<Record<string, unknown>>;
-  logout(): Promise<Record<string, unknown>>;
-  userInfo(): Promise<UserInfoResponse>;
-  oauthAuthorizeUrl(options: OAuthAuthorizeUrlOptions): string;
-  createOAuthAuthorization(
-    options: CreateOAuthAuthorizationOptions,
-  ): Promise<OAuthAuthorization>;
-  exchangeOAuthKey(
-    req: OAuthKeyExchangeRequest,
-  ): Promise<OAuthKeyExchangeResponse>;
-  activity(
-    params?: Record<string, string | number | boolean | null | undefined>,
-  ): Promise<Record<string, unknown>>;
-
-  attestation(): Promise<Uint8Array>;
-  trustRelease(url?: string): Promise<Record<string, unknown>>;
-}
-
-export declare function fetchTrustRelease(options?: {
-  trustUrl?: string;
-  fetchImpl?: TrustedRouterFetch;
-}): Promise<Record<string, unknown>>;
-
-export { fetchTrustRelease as trustRelease };
-
-export declare function randomOAuthState(options?: {
-  byteLength?: number;
-}): string;
-
-export declare function createOAuthPkcePair(options?: {
-  codeVerifier?: string | null;
-}): Promise<OAuthPkcePair>;
-
-export declare function collectCompletion(
-  chunks: ChatCompletionChunk[],
-): ChatCompletion;

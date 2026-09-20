@@ -50,7 +50,7 @@ execFileSync(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconf
 
 // hand-maintained until ported; shrink this list as modules port
 const sources = new Set(await entryPoints("src"));
-for (const name of ["index"]) {
+for (const name of []) {
   if (sources.has(`src/${name}.ts`)) {
     throw new Error(`Refusing to copy src/${name}.d.ts: src/${name}.ts generates its declaration`);
   }
