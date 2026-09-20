@@ -49,21 +49,30 @@ export interface ReceiptClaims {
   attestation: ReceiptAttestationStatus;
 }
 
-export interface VerifyReceiptOptions {
+interface ReceiptVerificationOptions {
   /** HTTPS origin that must match the signed iss claim after origin normalization. */
   expectedIssuer: string;
-  requestBody?: ArrayBuffer | ArrayBufferView | null;
-  responseBody?: ArrayBuffer | ArrayBufferView | null;
-  responseStream?: ArrayBuffer | ArrayBufferView | null;
   expectedNonce?: string | null;
   maxAgeSeconds?: number | null;
   now?: number | null;
   /** Exact GCP CS JWT bytes pinned by att_sha256 or embedded in a flattened receipt. */
   attestation?: ArrayBuffer | ArrayBufferView | null;
   requireAttestation?: boolean;
-  /** Require both request and response traffic bindings. Defaults to true. */
-  requireBindings?: boolean;
 }
+
+type ReceiptBytes = ArrayBuffer | ArrayBufferView;
+
+/** Both traffic bindings are required unless inspection is explicitly requested. */
+export type VerifyReceiptOptions = ReceiptVerificationOptions & (
+  | ({ requireBindings?: true; requestBody: ReceiptBytes } & (
+      | { responseBody: ReceiptBytes; responseStream?: null }
+      | { responseStream: ReceiptBytes; responseBody?: null }
+    ))
+  | ({ requireBindings: false; requestBody?: ReceiptBytes | null } & (
+      | { responseBody?: ReceiptBytes | null; responseStream?: null }
+      | { responseStream?: ReceiptBytes | null; responseBody?: null }
+    ))
+);
 
 export declare class ReceiptVerificationError extends Error {}
 export declare class ReceiptStructureError extends ReceiptVerificationError {}
@@ -92,5 +101,9 @@ export declare class ReceiptCapture implements AsyncIterableIterator<Uint8Array>
   next(): Promise<IteratorResult<Uint8Array>>;
   return(value?: unknown): Promise<IteratorResult<Uint8Array>>;
   [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array>;
-  verify(options: Omit<VerifyReceiptOptions, "responseStream">): Promise<ReceiptClaims>;
+  /** Supplies the response stream from captured bytes; the request is still required. */
+  verify(options: ReceiptVerificationOptions & { responseBody?: null; responseStream?: never } & (
+    | { requireBindings?: true; requestBody: ReceiptBytes }
+    | { requireBindings: false; requestBody?: ReceiptBytes | null }
+  )): Promise<ReceiptClaims>;
 }

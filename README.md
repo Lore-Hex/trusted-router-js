@@ -7,6 +7,8 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Verifiable trust](https://img.shields.io/badge/trust-attested-16a34a)](https://trust.trustedrouter.com)
 
+The included TypeScript declarations are verified in CI with consumer type tests, declaration export sync, and attw/publint package checks.
+
 OpenAI-compatible JS/TS client for [TrustedRouter](https://trustedrouter.com) —
 the hosted, attested LLM router that lets you point one OpenAI-shaped client
 at every provider (Anthropic, OpenAI, Google Vertex, Gemini, DeepSeek,
