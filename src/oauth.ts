@@ -20,16 +20,51 @@
  * this stays a thin, faithful wrapper over the live backend contract.
  */
 
+import type {
+  TrustedRouter,
+  CreateOAuthAuthorizationOptions,
+  OAuthIdentity,
+} from "./index.js";
+
+export interface BrowserOAuthFlowOptions {
+  client: TrustedRouter;
+  /** Storage backend; defaults to globalThis.sessionStorage. */
+  storage?: Storage | null;
+  /** sessionStorage key to use; defaults to "_tr_oauth". */
+  storageKey?: string;
+}
+
+export interface BrowserOAuthInitiateResult {
+  url: string;
+  state: string | null;
+}
+
+export interface BrowserOAuthCallbackResult {
+  key: string;
+  user_id: string | null;
+  identity: OAuthIdentity | null;
+}
+
+export type BrowserOAuthInitiateOptions = Omit<
+  CreateOAuthAuthorizationOptions,
+  "callbackUrl"
+>;
+
 const STORAGE_KEY = "_tr_oauth";
 
 export class BrowserOAuthError extends Error {
-  constructor(message) {
+  constructor(message?: string) {
     super(message);
     this.name = "BrowserOAuthError";
   }
 }
 
 export class BrowserOAuthFlow {
+  declare callbackUrl: string;
+  declare client: TrustedRouter;
+  declare storageKey: string;
+  declare private _storage: Storage | null;
+
   /**
    * @param {string} callbackUrl - the redirect target registered for this
    *   app; TrustedRouter sends the user back here with ?code & ?state.
@@ -41,7 +76,8 @@ export class BrowserOAuthFlow {
    *   globalThis.sessionStorage.
    * @param {string} [options.storageKey] - sessionStorage key to use.
    */
-  constructor(callbackUrl, { client, storage = null, storageKey = STORAGE_KEY } = {}) {
+  constructor(callbackUrl: string, options: BrowserOAuthFlowOptions);
+  constructor(callbackUrl: string, { client, storage = null, storageKey = STORAGE_KEY }: Partial<BrowserOAuthFlowOptions> = {}) {
     if (!callbackUrl) throw new BrowserOAuthError("callbackUrl is required");
     if (!client) throw new BrowserOAuthError("a TrustedRouter client is required");
     this.callbackUrl = callbackUrl;
@@ -50,7 +86,7 @@ export class BrowserOAuthFlow {
     this._storage = storage;
   }
 
-  get storage() {
+  get storage(): Storage {
     const store = this._storage ?? globalThis.sessionStorage;
     if (!store) {
       throw new BrowserOAuthError(
@@ -67,7 +103,7 @@ export class BrowserOAuthFlow {
    *   (keyLabel, limit, usageLimitType, expiresAt, spawnAgent, spawnCloud,
    *   state, codeVerifier, ...).
    */
-  async initiate(opts = {}) {
+  async initiate(opts: BrowserOAuthInitiateOptions = {}): Promise<BrowserOAuthInitiateResult> {
     const authorization = await this.client.createOAuthAuthorization({
       ...opts,
       callbackUrl: this.callbackUrl,
@@ -89,9 +125,11 @@ export class BrowserOAuthFlow {
    * @param {URLSearchParams|string|null} [searchParams] - the callback
    *   query params; defaults to globalThis.location.search.
    */
-  async handleCallback(searchParams = null) {
+  async handleCallback(searchParams: URLSearchParams | string | null = null): Promise<BrowserOAuthCallbackResult> {
     const params = toSearchParams(searchParams);
-    const stored = this._readStored();
+    // Storage JSON historically has no shape validation. Keep property reads
+    // (including the native TypeError for null) and unknown field values intact.
+    const stored = this._readStored() as { state?: unknown; codeVerifier?: unknown };
 
     const returnedState = params.get("state");
     if (stored.state) {
@@ -110,7 +148,8 @@ export class BrowserOAuthFlow {
     try {
       exchanged = await this.client.exchangeOAuthKey({
         code,
-        codeVerifier: stored.codeVerifier ?? null,
+        // Preserve the existing unchecked handoff of malformed stored verifiers.
+        codeVerifier: (stored.codeVerifier ?? null) as string | null,
       });
     } finally {
       this.clear();
@@ -124,7 +163,7 @@ export class BrowserOAuthFlow {
   }
 
   /** Remove any persisted OAuth state. Safe to call at any time. */
-  clear() {
+  clear(): void {
     try {
       this.storage.removeItem(this.storageKey);
     } catch {
@@ -132,7 +171,7 @@ export class BrowserOAuthFlow {
     }
   }
 
-  _readStored() {
+  private _readStored(): unknown {
     let raw;
     try {
       raw = this.storage.getItem(this.storageKey);
@@ -152,7 +191,7 @@ export class BrowserOAuthFlow {
   }
 }
 
-function toSearchParams(searchParams) {
+function toSearchParams(searchParams: URLSearchParams | string | null): URLSearchParams {
   if (searchParams instanceof URLSearchParams) return searchParams;
   if (typeof searchParams === "string") return new URLSearchParams(searchParams);
   const search = globalThis.location?.search;

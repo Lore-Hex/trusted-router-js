@@ -49,6 +49,6 @@ execFileSync(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconf
 });
 
 // hand-maintained until ported; shrink this list as modules port
-for (const name of ["index", "attestation", "session", "oauth"]) {
+for (const name of ["index", "attestation", "session"]) {
   await copyFile(`src/${name}.d.ts`, `dist/${name}.d.ts`);
 }

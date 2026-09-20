@@ -5,11 +5,15 @@
  * root barrel stays browser-safe (typeof-guarded btoa/Buffer fallback).
  */
 
-export function randomOAuthState({ byteLength = 16 } = {}) {
+export function randomOAuthState({ byteLength = 16 }: { byteLength?: number } = {}): string {
   return randomBase64Url(byteLength);
 }
 
-export async function createOAuthPkcePair({ codeVerifier = null } = {}) {
+export async function createOAuthPkcePair({ codeVerifier = null }: { codeVerifier?: string | null } = {}): Promise<{
+  codeVerifier: string;
+  codeChallenge: string;
+  codeChallengeMethod: "S256";
+}> {
   const verifier = codeVerifier ?? randomBase64Url(32);
   return {
     codeVerifier: verifier,
@@ -18,7 +22,7 @@ export async function createOAuthPkcePair({ codeVerifier = null } = {}) {
   };
 }
 
-export function randomBase64Url(byteLength) {
+export function randomBase64Url(byteLength: number): string {
   if (!globalThis.crypto?.getRandomValues) {
     throw new Error("Web Crypto getRandomValues is required");
   }
@@ -27,7 +31,7 @@ export function randomBase64Url(byteLength) {
   return base64UrlEncodeBytes(bytes);
 }
 
-export async function sha256Base64Url(text) {
+export async function sha256Base64Url(text: string): Promise<string> {
   if (!globalThis.crypto?.subtle) {
     throw new Error("Web Crypto subtle digest is required");
   }
@@ -36,7 +40,7 @@ export async function sha256Base64Url(text) {
   return base64UrlEncodeBytes(new Uint8Array(digest));
 }
 
-export function base64UrlEncodeBytes(bytes) {
+export function base64UrlEncodeBytes(bytes: Uint8Array): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   const encoded =
@@ -46,7 +50,7 @@ export function base64UrlEncodeBytes(bytes) {
   return encoded.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-export function callbackUrlWithState(callbackUrl, state) {
+export function callbackUrlWithState(callbackUrl: string, state: string): string {
   const url = new URL(callbackUrl);
   url.searchParams.set("state", state);
   return url.toString();

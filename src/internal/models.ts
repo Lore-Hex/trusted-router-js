@@ -6,6 +6,8 @@
  * (test/parity-contract.test.js, test/fusion.test.js) and must not change.
  */
 
+import type { ModelListOptions, ProviderPreferencesOptions } from "../index.js";
+
 // Feeds the User-Agent string. package.json is the single source of truth;
 // test/parity-contract.test.js pins this constant to it so they cannot drift
 // again (a runtime read of package.json would drag Node built-ins into the
@@ -73,6 +75,20 @@ export const FUSION_FREEDOM_FALLBACK_JUDGES = Object.freeze([
 
 /** Typed, JSON-serializable provider routing preferences. */
 export class ProviderPreferences {
+  declare order?: string[];
+  declare only?: string[];
+  declare ignore?: string[];
+  declare sort?: NonNullable<ProviderPreferencesOptions["sort"]>;
+  declare allow_fallbacks?: boolean;
+  declare require_parameters?: boolean;
+  declare data_collection?: NonNullable<ProviderPreferencesOptions["dataCollection"]>;
+  declare min_privacy?: NonNullable<ProviderPreferencesOptions["minPrivacy"]>;
+  declare jurisdiction?: "us";
+  declare usage?: NonNullable<ProviderPreferencesOptions["usage"]>;
+  declare quantizations?: string[];
+  declare max_price?: Record<string, unknown>;
+  [key: string]: unknown;
+
   constructor({
     order = null,
     only = null,
@@ -86,7 +102,7 @@ export class ProviderPreferences {
     usage = null,
     quantizations = null,
     maxPrice = null,
-  } = {}) {
+  }: ProviderPreferencesOptions = {}) {
     if (sort !== null && !["price", "latency", "throughput"].includes(String(sort).toLowerCase())) {
       throw new TypeError("sort must be price, latency, or throughput");
     }
@@ -105,13 +121,13 @@ export class ProviderPreferences {
     if (order !== null) this.order = [...order];
     if (only !== null) this.only = [...only];
     if (ignore !== null) this.ignore = [...ignore];
-    if (sort !== null) this.sort = String(sort).toLowerCase();
+    if (sort !== null) this.sort = String(sort).toLowerCase() as NonNullable<ProviderPreferencesOptions["sort"]>;
     if (allowFallbacks !== null) this.allow_fallbacks = Boolean(allowFallbacks);
     if (requireParameters !== null) this.require_parameters = Boolean(requireParameters);
-    if (dataCollection !== null) this.data_collection = String(dataCollection).toLowerCase();
-    if (minPrivacy !== null) this.min_privacy = String(minPrivacy).toLowerCase();
+    if (dataCollection !== null) this.data_collection = String(dataCollection).toLowerCase() as NonNullable<ProviderPreferencesOptions["dataCollection"]>;
+    if (minPrivacy !== null) this.min_privacy = String(minPrivacy).toLowerCase() as NonNullable<ProviderPreferencesOptions["minPrivacy"]>;
     if (jurisdiction !== null) this.jurisdiction = "us";
-    if (usage !== null) this.usage = String(usage).toLowerCase();
+    if (usage !== null) this.usage = String(usage).toLowerCase() as NonNullable<ProviderPreferencesOptions["usage"]>;
     if (quantizations !== null) this.quantizations = [...quantizations];
     if (maxPrice !== null) this.max_price = { ...maxPrice };
   }
@@ -134,7 +150,7 @@ export function modelsPath({
   openWeights = null,
   providerJurisdiction = null,
   providerRegion = null,
-} = {}) {
+}: ModelListOptions = {}) {
   const params = new URLSearchParams();
   if (openWeights !== null && openWeights !== undefined) {
     params.set("open_weights", openWeights ? "true" : "false");
