@@ -206,7 +206,7 @@ function integerOption(value: string, label: string, { min = Number.MIN_SAFE_INT
 }
 
 function validateCommandOptions(command: string, values: CliValues) {
-  const allowed = COMMAND_OPTIONS[command];
+  const allowed = Object.hasOwn(COMMAND_OPTIONS, command) ? COMMAND_OPTIONS[command] : undefined;
   if (!allowed) throw new CliUsageError(`unknown command: ${command}`);
   for (const name of Object.keys(values)) {
     if (!GLOBAL_OPTIONS.has(name) && !allowed.has(name)) {
@@ -547,7 +547,7 @@ export async function runCli(argv: string[] = [], {
     if (values.help) {
       if (command === null) write(stdout, HELP);
       else {
-        if (!COMMAND_HELP[command]) throw new CliUsageError(`unknown command: ${command}`);
+        if (!Object.hasOwn(COMMAND_HELP, command)) throw new CliUsageError(`unknown command: ${command}`);
         write(stdout, COMMAND_HELP[command]);
       }
       return EXIT_SUCCESS;
