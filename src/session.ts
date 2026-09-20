@@ -6,14 +6,70 @@ import {
   verifyGatewayAttestation,
 } from "./attestation.js";
 
-const sessionMeta = new WeakMap();
-let nodeRuntime = null;
+import type { TLSSocket } from "node:tls";
+import type { AttestationPolicy, GatewayAttestation } from "./attestation.js";
+
+export interface GatewaySession {
+  attestation: import("./attestation.js").GatewayAttestation;
+  socket: import("node:tls").TLSSocket;
+  exporter: Uint8Array;
+  leafDer: Uint8Array;
+}
+
+export interface VerifyGatewaySessionOptions {
+  baseUrl: string;
+  policy: import("./attestation.js").AttestationPolicy;
+  jwks?: { keys: Array<Record<string, unknown>> } | null;
+  jwksUrl?: string;
+  connectIp?: string | null;
+  timeoutMs?: number;
+  /** Optional trust roots, useful for verified loopback tests. */
+  ca?: import("node:tls").ConnectionOptions["ca"] | null;
+}
+
+interface GatewayUrl {
+  host: string;
+  port: number;
+  hostHeader: string;
+  attestationPath: string;
+}
+
+type Jwks = NonNullable<VerifyGatewaySessionOptions["jwks"]>;
+// Node accepts an omitted context; the installed TLS declarations require one.
+type ExportKeyingMaterial = (length: number, label: string, context?: Buffer) => Buffer;
+// snapshotPolicy explicitly preserves absent array properties as undefined.
+type PolicySnapshot = Omit<AttestationPolicy, "imageDigests" | "imageReferences"> & {
+  imageDigests: string[] | undefined;
+  imageReferences: string[] | undefined;
+};
+
+interface SessionMeta extends GatewayUrl {
+  timeoutMs: number;
+  policy: PolicySnapshot;
+  jwks: Jwks | null;
+  jwksUrl: string;
+  exporter: Uint8Array;
+  leafDer: Uint8Array;
+}
+
+interface HttpResponse {
+  statusCode: number;
+  headers: Map<string, string>;
+  body: Buffer;
+}
+
+const sessionMeta = new WeakMap<GatewaySession, SessionMeta>();
+let nodeRuntime: {
+  randomBytes: typeof import("node:crypto").randomBytes;
+  tlsConnect: typeof import("node:tls").connect;
+} | null = null;
 
 /**
  * Open a TLS 1.3 session, bind `/attestation` to that same session's RFC 9266
  * exporter, verify the fresh nonce + exporter closure, and return the live
  * pinned socket. The caller owns the returned socket and must destroy it.
  */
+export function verifyGatewaySession(options: VerifyGatewaySessionOptions): Promise<GatewaySession>;
 export async function verifyGatewaySession({
   baseUrl,
   policy,
@@ -22,7 +78,7 @@ export async function verifyGatewaySession({
   connectIp = null,
   timeoutMs = 15_000,
   ca = null,
-} = {}) {
+}: Partial<VerifyGatewaySessionOptions> = {}): Promise<GatewaySession> {
   if (!policy) {
     throw new AttestationVerificationError("policy is required");
   }
@@ -43,7 +99,7 @@ export async function verifyGatewaySession({
   try {
     await waitForSecureConnect(socket, timeoutMs);
     assertTlsAuthorized(socket);
-    const exporter = socket.exportKeyingMaterial(EXPORTER_LENGTH, EXPORTER_LABEL);
+    const exporter = (socket.exportKeyingMaterial as ExportKeyingMaterial)(EXPORTER_LENGTH, EXPORTER_LABEL);
     const peer = socket.getPeerCertificate(true);
     if (!peer?.raw) {
       throw new AttestationVerificationError("TLS peer certificate missing raw DER");
@@ -87,9 +143,13 @@ export async function verifyGatewaySession({
  * Returning raw bytes here would let a caller mistake HTTP 200 for a verified
  * follow-up, so this mirrors verifyGatewaySession and returns trusted claims.
  */
-export async function fetchAttestationAgain(session, {
+export function fetchAttestationAgain(
+  session: GatewaySession,
+  options?: { nonceHex?: string },
+): Promise<GatewayAttestation>;
+export async function fetchAttestationAgain(session: GatewaySession, {
   nonceHex = null,
-} = {}) {
+}: { nonceHex?: string | null } = {}): Promise<GatewayAttestation> {
   const { randomBytes } = await loadNodeRuntime();
   if (nonceHex === null) nonceHex = randomBytes(EXPORTER_LENGTH).toString("hex");
   const meta = sessionMeta.get(session);
@@ -102,7 +162,7 @@ export async function fetchAttestationAgain(session, {
     ...meta,
     nonceHex,
   });
-  const followupExporter = session.socket.exportKeyingMaterial(
+  const followupExporter = (session.socket.exportKeyingMaterial as ExportKeyingMaterial)(
     EXPORTER_LENGTH,
     EXPORTER_LABEL,
   );
@@ -112,7 +172,8 @@ export async function fetchAttestationAgain(session, {
     );
   }
   return verifyGatewayAttestation(document, {
-    policy: meta.policy,
+    // Explicit undefined snapshot fields behave like omitted optional fields.
+    policy: meta.policy as AttestationPolicy,
     nonceHex,
     tlsCertDer: meta.leafDer,
     tlsExporter: meta.exporter,
@@ -121,7 +182,7 @@ export async function fetchAttestationAgain(session, {
   });
 }
 
-function snapshotPolicy(policy) {
+function snapshotPolicy(policy: AttestationPolicy): PolicySnapshot {
   return {
     ...policy,
     imageDigests: Array.isArray(policy.imageDigests)
@@ -133,7 +194,7 @@ function snapshotPolicy(policy) {
   };
 }
 
-function snapshotJwks(jwks) {
+function snapshotJwks(jwks: Jwks | null): Jwks | null {
   if (jwks === null) return null;
   return {
     ...jwks,
@@ -154,7 +215,7 @@ async function loadNodeRuntime() {
   return nodeRuntime;
 }
 
-function parseGatewayUrl(baseUrl) {
+function parseGatewayUrl(baseUrl: string | undefined): GatewayUrl {
   if (!baseUrl) {
     throw new AttestationVerificationError("baseUrl is required");
   }
@@ -162,7 +223,7 @@ function parseGatewayUrl(baseUrl) {
   try {
     url = new URL(baseUrl);
   } catch (err) {
-    throw new AttestationVerificationError(`invalid baseUrl: ${err.message}`);
+    throw new AttestationVerificationError(`invalid baseUrl: ${(err as { message: unknown }).message}`);
   }
   if (url.protocol !== "https:") {
     throw new AttestationVerificationError("baseUrl must use https");
@@ -183,7 +244,7 @@ function parseGatewayUrl(baseUrl) {
   };
 }
 
-function assertTlsAuthorized(socket) {
+function assertTlsAuthorized(socket: TLSSocket) {
   if (socket.authorized === true) return;
   const reason = socket.authorizationError
     ? `: ${socket.authorizationError}`
@@ -193,7 +254,7 @@ function assertTlsAuthorized(socket) {
   );
 }
 
-function watchSocketState(socket) {
+function watchSocketState(socket: TLSSocket) {
   const state = { ended: false, closed: false };
   const onEnd = () => {
     state.ended = true;
@@ -217,8 +278,8 @@ function watchSocketState(socket) {
   };
 }
 
-async function assertSocketPinnable(socket, state) {
-  await new Promise((resolve) => setImmediate(resolve));
+async function assertSocketPinnable(socket: TLSSocket, state: ReturnType<typeof watchSocketState>) {
+  await new Promise<void>((resolve) => setImmediate(resolve));
   if (
     state.ended ||
     state.closed ||
@@ -227,7 +288,7 @@ async function assertSocketPinnable(socket, state) {
     socket.readableEnded === true ||
     socket.writable === false ||
     socket.writableEnded === true ||
-    socket.writableDestroyed === true
+    (socket as TLSSocket & { writableDestroyed?: boolean }).writableDestroyed === true
   ) {
     throw new AttestationVerificationError(
       "attestation response unpinnable: TLS socket ended or closed",
@@ -235,21 +296,21 @@ async function assertSocketPinnable(socket, state) {
   }
 }
 
-function waitForSecureConnect(socket, timeoutMs) {
-  return new Promise((resolve, reject) => {
+function waitForSecureConnect(socket: TLSSocket, timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       socket.off("secureConnect", onSecureConnect);
       socket.off("error", onError);
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
     };
-    const finish = (err) => {
+    const finish = (err: Error | null) => {
       cleanup();
       if (err) reject(err);
       else resolve();
     };
     const onSecureConnect = () => finish(null);
-    const onError = (err) => finish(err);
+    const onError = (err: Error) => finish(err);
     const onTimeout = () => {
       finish(new AttestationVerificationError("TLS connection timed out"));
     };
@@ -260,12 +321,12 @@ function waitForSecureConnect(socket, timeoutMs) {
   });
 }
 
-async function fetchAttestationDocument(socket, {
+async function fetchAttestationDocument(socket: TLSSocket, {
   hostHeader,
   attestationPath,
   nonceHex,
   timeoutMs,
-}) {
+}: Pick<GatewayUrl, "hostHeader" | "attestationPath"> & { nonceHex: string; timeoutMs: number }) {
   const path = `${attestationPath}?nonce=${encodeURIComponent(nonceHex)}`;
   const request = [
     `GET ${path} HTTP/1.1`,
@@ -284,19 +345,19 @@ async function fetchAttestationDocument(socket, {
   return response.body;
 }
 
-function writeRequest(socket, request, timeoutMs) {
-  return new Promise((resolve, reject) => {
+function writeRequest(socket: TLSSocket, request: string, timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       socket.off("error", onError);
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
     };
-    const finish = (err) => {
+    const finish = (err: Error | null) => {
       cleanup();
       if (err) reject(err);
       else resolve();
     };
-    const onError = (err) => finish(err);
+    const onError = (err: Error) => finish(err);
     const onTimeout = () => {
       finish(new AttestationVerificationError("attestation request timed out"));
     };
@@ -307,10 +368,10 @@ function writeRequest(socket, request, timeoutMs) {
   });
 }
 
-function readHttpResponse(socket, timeoutMs) {
+function readHttpResponse(socket: TLSSocket, timeoutMs: number) {
   let buffer = Buffer.alloc(0);
 
-  return new Promise((resolve, reject) => {
+  return new Promise<HttpResponse>((resolve, reject) => {
     const cleanup = () => {
       socket.off("data", onData);
       socket.off("error", onError);
@@ -318,14 +379,15 @@ function readHttpResponse(socket, timeoutMs) {
       socket.off("timeout", onTimeout);
       socket.setTimeout(0);
     };
-    const finish = (err, response = null, rest = null) => {
+    const finish = (err: unknown, response: HttpResponse | null = null, rest: Buffer | null = null) => {
       cleanup();
       if (err) {
         reject(err);
       } else {
         socket.pause();
-        if (rest.length > 0) socket.unshift(rest);
-        resolve(response);
+        // Successful callers always provide the parsed response and remainder.
+        if (rest!.length > 0) socket.unshift(rest!);
+        resolve(response!);
       }
     };
     const tryParse = () => {
@@ -338,11 +400,11 @@ function readHttpResponse(socket, timeoutMs) {
       }
       if (result) finish(null, result.response, result.rest);
     };
-    const onData = (chunk) => {
+    const onData = (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       tryParse();
     };
-    const onError = (err) => finish(err);
+    const onError = (err: Error) => finish(err);
     const onEnd = () => {
       finish(new AttestationVerificationError("TLS socket ended before HTTP response"));
     };
@@ -358,7 +420,7 @@ function readHttpResponse(socket, timeoutMs) {
   });
 }
 
-function parseHttpResponse(buffer) {
+function parseHttpResponse(buffer: Buffer) {
   const headerEnd = buffer.indexOf("\r\n\r\n");
   if (headerEnd === -1) return null;
   const head = buffer.subarray(0, headerEnd).toString("latin1");
@@ -369,7 +431,7 @@ function parseHttpResponse(buffer) {
   }
   const httpMinor = statusMatch[1];
   const statusCode = Number(statusMatch[2]);
-  const headers = new Map();
+  const headers = new Map<string, string>();
   for (const line of lines.slice(1)) {
     const idx = line.indexOf(":");
     if (idx <= 0) continue;
