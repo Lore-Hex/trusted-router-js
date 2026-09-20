@@ -25,6 +25,8 @@ import {
   REGION_BASE_URLS,
 } from "./models.js";
 
+import type { HeaderSource } from "./transport.js";
+
 export const TELEMETRY_SCHEMA_VERSION = 1;
 export const DEFAULT_TELEMETRY_PATH = "/client-events";
 export const TELEMETRY_HOSTS = Object.freeze([
@@ -36,7 +38,7 @@ export const TELEMETRY_HOSTS = Object.freeze([
   "europe_west4",
   "control",
   "custom",
-]);
+] as const);
 export const TELEMETRY_ENDPOINTS = Object.freeze([
   "chat_completions",
   "messages",
@@ -48,7 +50,7 @@ export const TELEMETRY_ENDPOINTS = Object.freeze([
   "fusion",
   "control_other",
   "inference_other",
-]);
+] as const);
 export const TELEMETRY_OUTCOMES = Object.freeze([
   "ok",
   "http_error",
@@ -56,11 +58,11 @@ export const TELEMETRY_OUTCOMES = Object.freeze([
   "timeout",
   "stream_broken",
   "aborted",
-]);
+] as const);
 export const TELEMETRY_FINAL_OUTCOMES = Object.freeze([
   ...TELEMETRY_OUTCOMES,
   "exhausted",
-]);
+] as const);
 export const TELEMETRY_ERROR_CLASSES = Object.freeze([
   "dns",
   "tls",
@@ -76,14 +78,14 @@ export const TELEMETRY_ERROR_CLASSES = Object.freeze([
   "proxy_error",
   "stream_stalled",
   "unknown",
-]);
+] as const);
 export const TELEMETRY_TIMEOUT_PHASES = Object.freeze([
   "none",
   "connect",
   "first_byte",
   "idle",
   "total",
-]);
+] as const);
 export const TELEMETRY_LATENCY_BUCKETS = Object.freeze([
   "lt100",
   "lt200",
@@ -97,25 +99,100 @@ export const TELEMETRY_LATENCY_BUCKETS = Object.freeze([
   "lt51200",
   "lt102400",
   "ge102400",
-]);
+] as const);
 export const TELEMETRY_HTTP_STATUS_CLASSES = Object.freeze([
   "none",
   "2xx",
   "4xx",
   "429",
   "5xx",
-]);
-export const TELEMETRY_ERROR_SOURCES = Object.freeze(["router", "provider", "unknown"]);
+] as const);
+export const TELEMETRY_ERROR_SOURCES = Object.freeze(["router", "provider", "unknown"] as const);
 export const TELEMETRY_SAMPLE_REASONS = Object.freeze([
   "failure",
   "retried",
   "slow",
   "random",
-]);
+] as const);
 // The beacon schema module (client_events_schema.py) allows only GET|POST for
 // ClientRequestEvent.method; §5.3's PUT|PATCH|DELETE is a doc bug (modules
 // win). Other methods are never recorded, like py's `_recordable` gate.
-export const TELEMETRY_METHODS = Object.freeze(["GET", "POST"]);
+export const TELEMETRY_METHODS = Object.freeze(["GET", "POST"] as const);
+
+export type TelemetryHost = typeof TELEMETRY_HOSTS[number];
+export type TelemetryEndpoint = typeof TELEMETRY_ENDPOINTS[number];
+export type TelemetryOutcome = typeof TELEMETRY_OUTCOMES[number];
+export type TelemetryErrorClass = typeof TELEMETRY_ERROR_CLASSES[number];
+export type TelemetryTimeoutPhase = typeof TELEMETRY_TIMEOUT_PHASES[number];
+export type TelemetryLatencyBucket = typeof TELEMETRY_LATENCY_BUCKETS[number];
+type TelemetryStatusClass = typeof TELEMETRY_HTTP_STATUS_CLASSES[number];
+
+interface Attempt {
+  index: number;
+  host: TelemetryHost;
+  outcome: TelemetryOutcome;
+  httpStatus: number | null;
+  errorClass: TelemetryErrorClass | null;
+  errorSource: typeof TELEMETRY_ERROR_SOURCES[number] | null;
+  shouldRetry: "true" | "false" | "absent";
+  retryAfterMs: number | null;
+  elapsedMs: number;
+  ttfbMs: number | null;
+  requestId: string | null;
+  moved: boolean;
+}
+
+export interface TelemetryEvent {
+  age_ms: number;
+  plane: "inference";
+  endpoint: TelemetryEndpoint;
+  method: typeof TELEMETRY_METHODS[number];
+  streaming: boolean;
+  provider_pinned: boolean;
+  model: string | null;
+  attempts: ReturnType<RequestRecorder["_attemptRecord"]>[];
+  final_outcome: TelemetryOutcome | "exhausted";
+  final_http_status: number | null;
+  total_ms: number;
+  ttft_ms: number | null;
+  failover_used: boolean;
+  timeout_phase: TelemetryTimeoutPhase;
+  configured_timeout_ms: number | null;
+}
+
+type CounterKey = [
+  "request" | "attempt", TelemetryEndpoint, boolean, TelemetryHost,
+  TelemetryOutcome, TelemetryErrorClass | null, TelemetryStatusClass,
+  TelemetryTimeoutPhase, boolean, boolean,
+];
+interface CounterIncrement {
+  requests: number;
+  attempts: number;
+  failover_used: number;
+  first_attempt_success: number;
+  total_ms_hist?: Partial<Record<TelemetryLatencyBucket, number>>;
+  first_event_ms_hist?: Partial<Record<TelemetryLatencyBucket, number>>;
+}
+export type TelemetryCounter = [CounterKey, CounterIncrement];
+export interface TelemetrySink {
+  onRequest(event: TelemetryEvent, counters: TelemetryCounter[]): void;
+}
+export type BodySettlement = "done" | "cancel" | "error";
+export interface StreamLifecycle {
+  begin(): void;
+  end(): void;
+  settle(kind: BodySettlement, error?: unknown): void;
+}
+interface RecorderOptions {
+  sink?: TelemetrySink | null;
+  endpoint?: TelemetryEndpoint;
+  method?: string;
+  streaming?: boolean;
+  providerPinned?: boolean;
+  model?: string | null;
+  configuredTimeoutMs?: number | null;
+  now?: (() => number) | null | undefined;
+}
 
 export const MAX_DURATION_MS = 3_600_000;
 export const MODEL_RE = /^[A-Za-z0-9._:/~@-]{1,128}$/;
@@ -130,7 +207,7 @@ const TIMEOUT_ERROR_CLASSES = new Set([
   "pool_timeout",
 ]);
 // The timeout phase each timeout class belongs to (py classify_transport_error).
-const TIMEOUT_PHASES = new Map([
+const TIMEOUT_PHASES = new Map<TelemetryErrorClass, TelemetryTimeoutPhase>([
   ["connect_timeout", "connect"],
   ["read_timeout", "first_byte"],
   ["write_timeout", "first_byte"],
@@ -154,7 +231,7 @@ const TIMEOUT_FLOORS_MS = new Map([
   ["idle", 30_000],
 ]);
 
-function schemeHost(url) {
+function schemeHost(url: unknown) {
   try {
     const parsed = new URL(String(url));
     if (!parsed.protocol || !parsed.hostname) return null;
@@ -164,26 +241,26 @@ function schemeHost(url) {
   }
 }
 
-function isControlHost(url) {
+function isControlHost(url: unknown) {
   const pair = schemeHost(url);
   if (pair === null) return false;
   const [scheme, host] = pair.split("//");
   return (
     scheme === "https" &&
-    (host === "trustedrouter.com" || host.endsWith(".trustedrouter.com"))
+    (host === "trustedrouter.com" || host!.endsWith(".trustedrouter.com"))
   );
 }
 
 /** Map a base URL to the closed telemetry host vocabulary. */
-export function hostEnum(baseUrl) {
+export function hostEnum(baseUrl: unknown): TelemetryHost {
   const pair = schemeHost(baseUrl);
   if (pair === null) return "custom";
   if (pair === schemeHost(DEFAULT_API_BASE_URL)) return "apex";
   if (pair === schemeHost(ALIAS_API_BASE_URLS[0])) return "ally";
   if (pair === schemeHost(ALIAS_API_BASE_URLS[1])) return "uptime";
-  const regions = ["us_central1", "us_east4", "europe_west4"];
+  const regions = ["us_central1", "us_east4", "europe_west4"] as const;
   for (let index = 0; index < REGION_BASE_URLS.length; index += 1) {
-    if (pair === schemeHost(REGION_BASE_URLS[index])) return regions[index];
+    if (pair === schemeHost(REGION_BASE_URLS[index])) return regions[index]!;
   }
   if (pair === schemeHost(DEFAULT_CONTROL_BASE_URL) || isControlHost(baseUrl)) {
     return "control";
@@ -191,13 +268,13 @@ export function hostEnum(baseUrl) {
   return "custom";
 }
 
-const EXACT_ENDPOINTS = new Map([
+const EXACT_ENDPOINTS = new Map<string, TelemetryEndpoint>([
   ["/chat/completions", "chat_completions"],
   ["/messages", "messages"],
   ["/responses", "responses"],
   ["/embeddings", "embeddings"],
 ]);
-const PREFIX_ENDPOINTS = [
+const PREFIX_ENDPOINTS: [string, TelemetryEndpoint][] = [
   ["/images", "images"],
   ["/videos", "videos"],
   ["/models", "models"],
@@ -211,7 +288,7 @@ const PREFIX_ENDPOINTS = [
  * leading slashes stripped), so "chat/completions" and "/chat/completions"
  * describe the same request.
  */
-export function endpointEnum(path) {
+export function endpointEnum(path: unknown): TelemetryEndpoint {
   let clean = String(path ?? "");
   const cut = clean.search(/[?#]/);
   if (cut !== -1) clean = clean.slice(0, cut);
@@ -226,16 +303,16 @@ export function endpointEnum(path) {
 }
 
 /** The LatencyBucket (upper-bound-exclusive, ms) a duration falls in. */
-export function latencyBucket(ms) {
+export function latencyBucket(ms: unknown): TelemetryLatencyBucket {
   const value = Math.max(0, Math.trunc(Number(ms)) || 0);
   for (let index = 0; index < LATENCY_UPPER_BOUNDS.length; index += 1) {
-    if (value < LATENCY_UPPER_BOUNDS[index]) return TELEMETRY_LATENCY_BUCKETS[index];
+    if (value < LATENCY_UPPER_BOUNDS[index]!) return TELEMETRY_LATENCY_BUCKETS[index]!;
   }
-  return TELEMETRY_LATENCY_BUCKETS[TELEMETRY_LATENCY_BUCKETS.length - 1];
+  return TELEMETRY_LATENCY_BUCKETS[TELEMETRY_LATENCY_BUCKETS.length - 1]!;
 }
 
 /** The HttpStatusClass of a status (429 is its own class; null → none). */
-export function statusClass(status) {
+export function statusClass(status: unknown): TelemetryStatusClass {
   if (status === null || status === undefined) return "none";
   const code = Number(status);
   if (code >= 200 && code <= 299) return "2xx";
@@ -246,7 +323,7 @@ export function statusClass(status) {
 }
 
 /** §5.4 timeout_floor_met: configured connect ≥10 s / first-byte ≥60 s / idle ≥30 s. */
-export function timeoutFloorMet(phase, configuredMs) {
+export function timeoutFloorMet(phase: TelemetryTimeoutPhase, configuredMs: number | null | undefined) {
   if (configuredMs === null || configuredMs === undefined) return false;
   const floor = TIMEOUT_FLOORS_MS.get(phase);
   return floor !== undefined && Number(configuredMs) >= floor;
@@ -261,8 +338,8 @@ export function timeoutFloorMet(phase, configuredMs) {
  * One answer for both channels: opting out disables the header AND the beacon.
  */
 export function resolveTelemetryEnabled(
-  explicit,
-  { baseUrl, controlBaseUrl, environ },
+  explicit: boolean | null | undefined,
+  { baseUrl, controlBaseUrl, environ }: { baseUrl: string; controlBaseUrl: string; environ: Record<string, string | undefined> },
 ) {
   if (explicit !== null && explicit !== undefined) return Boolean(explicit);
   const env = environ ?? {};
@@ -283,9 +360,9 @@ export function resolveTelemetryEnabled(
  * wrong here" has to look past the top-level object. Shared with the engine's
  * cancellation check (transport.js) so there is ONE chain walker in the SDK.
  */
-export function errorChain(error) {
-  const chain = [];
-  const seen = new Set();
+export function errorChain(error: unknown): unknown[] {
+  const chain: unknown[] = [];
+  const seen = new Set<unknown>();
   let current = error;
   while (
     current !== null &&
@@ -295,7 +372,8 @@ export function errorChain(error) {
   ) {
     chain.push(current);
     seen.add(current);
-    current = current.cause;
+    // Read the original property even on boxed primitives; callers handle getters.
+    current = (current as { cause?: unknown }).cause;
   }
   return chain;
 }
@@ -323,9 +401,9 @@ const TLS_CODES = new Set([
 // closed-enum fact for the first three.
 const SOCKET_PROTOCOL_MESSAGES = new Set(["bad response", "bad upgrade"]);
 const SOCKET_CONNECT_MESSAGES = new Set(["bad connect"]);
-const isSocketError = (code, name) =>
+const isSocketError = (code: string, name: string) =>
   code === "UND_ERR_SOCKET" || name === "SocketError";
-const socketPhase = (code, name, message) => {
+const socketPhase = (code: string, name: string, message: string) => {
   if (!isSocketError(code, name)) return null;
   const normalized = message.trim().toLowerCase();
   if (SOCKET_PROTOCOL_MESSAGES.has(normalized)) return "protocol_error";
@@ -346,7 +424,7 @@ const socketPhase = (code, name, message) => {
 // JS transport emits a distinguishable pool-acquire timeout — and a bare
 // `TypeError: fetch failed` with no identifiable cause is `unknown` by
 // design rather than a guess.
-const ERROR_CLASSIFIERS = [
+const ERROR_CLASSIFIERS: [TelemetryErrorClass, (code: string, name: string, message: string, syscall: string) => boolean][] = [
   [
     "connect_timeout",
     (code, name, _message, syscall) =>
@@ -412,15 +490,15 @@ const ERROR_CLASSIFIERS = [
 ];
 
 /** Classify a transport error into the closed ErrorClass vocabulary. */
-export function classifyTransportError(error) {
+export function classifyTransportError(error: unknown): TelemetryErrorClass {
   try {
     const chain = errorChain(error);
     for (const [errorClass, matches] of ERROR_CLASSIFIERS) {
       for (const item of chain) {
-        const code = typeof item?.code === "string" ? item.code : "";
-        const name = typeof item?.name === "string" ? item.name : "";
-        const message = typeof item?.message === "string" ? item.message : "";
-        const syscall = typeof item?.syscall === "string" ? item.syscall : "";
+        const code = typeof (item as { code?: unknown } | null | undefined)?.code === "string" ? (item as { code: string }).code : "";
+        const name = typeof (item as { name?: unknown } | null | undefined)?.name === "string" ? (item as { name: string }).name : "";
+        const message = typeof (item as { message?: unknown } | null | undefined)?.message === "string" ? (item as { message: string }).message : "";
+        const syscall = typeof (item as { syscall?: unknown } | null | undefined)?.syscall === "string" ? (item as { syscall: string }).syscall : "";
         if (matches(code, name, message, syscall)) return errorClass;
       }
     }
@@ -430,15 +508,15 @@ export function classifyTransportError(error) {
   return "unknown";
 }
 
-function durationMs(start, end) {
+function durationMs(start: number, end: number) {
   return Math.min(MAX_DURATION_MS, Math.max(0, Math.trunc(end - start)));
 }
 
 /** Case-insensitive header read over a Headers object or a plain record. */
-function readHeaderValue(headers, name) {
+function readHeaderValue(headers: HeaderSource, name: string): unknown {
   if (headers === null || headers === undefined) return null;
   try {
-    if (typeof headers.get === "function") return headers.get(name) ?? null;
+    if (typeof (headers as { get?: (name: string) => unknown }).get === "function") return (headers as { get: (name: string) => unknown }).get(name) ?? null;
     const wanted = name.toLowerCase();
     for (const [key, value] of Object.entries(headers)) {
       if (String(key).toLowerCase() === wanted) return value ?? null;
@@ -451,17 +529,19 @@ function readHeaderValue(headers, name) {
 
 /** The sink that receives finished records; the beacon reporter implements it. */
 export class NullSink {
-  onRequest(_event, _counters) {}
+  onRequest(_event: TelemetryEvent, _counters: TelemetryCounter[]) {}
 }
 
 /** In-memory sink for tests and telemetry debug tooling (py RecordingSink). */
 export class RecordingSink {
+  declare events: TelemetryEvent[];
+  declare counters: TelemetryCounter[];
   constructor() {
     this.events = [];
     this.counters = [];
   }
 
-  onRequest(event, counters) {
+  onRequest(event: TelemetryEvent, counters: TelemetryCounter[]) {
     this.events.push(event);
     this.counters.push(...counters);
   }
@@ -472,9 +552,9 @@ const NULL_SINK = new NullSink();
 // The engine associates the terminal Response with its recorder so the SSE
 // codec (./sse.js) can report the first decoded event — the only place TTFT
 // is observable (§6.1) — without changing the codec's public signatures.
-const RECORDERS = new WeakMap();
+const RECORDERS = new WeakMap<object, { recorder: RequestRecorder; streamLifecycle: StreamLifecycle | null }>();
 
-export function attachRecorder(response, recorder, streamLifecycle = null) {
+export function attachRecorder(response: object, recorder: RequestRecorder, streamLifecycle: StreamLifecycle | null = null) {
   try {
     if (response !== null && typeof response === "object") {
       RECORDERS.set(response, { recorder, streamLifecycle });
@@ -484,7 +564,7 @@ export function attachRecorder(response, recorder, streamLifecycle = null) {
   }
 }
 
-export function recorderFor(response) {
+export function recorderFor(response: object) {
   try {
     return RECORDERS.get(response)?.recorder ?? null;
   } catch {
@@ -498,7 +578,7 @@ export function recorderFor(response) {
  * item; deferring settlement until the decoder unwinds keeps TTFT and an
  * early consumer return observable without changing the public stream API.
  */
-export function beginRecorderStream(response) {
+export function beginRecorderStream(response: object) {
   try {
     RECORDERS.get(response)?.streamLifecycle?.begin?.();
   } catch {
@@ -506,7 +586,7 @@ export function beginRecorderStream(response) {
   }
 }
 
-export function endRecorderStream(response) {
+export function endRecorderStream(response: object) {
   try {
     RECORDERS.get(response)?.streamLifecycle?.end?.();
   } catch {
@@ -524,6 +604,31 @@ export function endRecorderStream(response) {
  * deterministic tests, like the Python reporter's.
  */
 export class RequestRecorder {
+  declare sink: TelemetrySink;
+  declare endpoint: TelemetryEndpoint;
+  declare method: string;
+  declare streaming: boolean;
+  declare providerPinned: boolean;
+  declare model: string | null;
+  declare configuredTimeoutMs: number | null;
+  declare attempts: Attempt[];
+  declare failoverUsed: boolean;
+  declare ttftMs: number | null;
+  declare _recordable: boolean;
+  declare _now: () => number;
+  declare _attemptPhases: TelemetryTimeoutPhase[];
+  declare _attemptCount: number;
+  declare _currentAttempt: Attempt | null;
+  declare _currentPhase: TelemetryTimeoutPhase;
+  declare _committedAttemptIndex: number;
+  declare _attemptCounterRows: Map<string, TelemetryCounter>;
+  declare _firstErrorClass: TelemetryErrorClass | null;
+  declare _firstStarted: number | null;
+  declare _attemptStarted: number | null;
+  declare _currentHost: TelemetryHost | null;
+  declare _currentIndex: number | null;
+  declare _bodyStarted: boolean;
+  declare _finished: boolean;
   constructor({
     sink = null,
     endpoint = "inference_other",
@@ -533,13 +638,13 @@ export class RequestRecorder {
     model = null,
     configuredTimeoutMs = null,
     now = null,
-  } = {}) {
+  }: RecorderOptions = {}) {
     this.sink = sink ?? NULL_SINK;
     this.endpoint = endpoint;
     this.method = String(method ?? "").toUpperCase();
     this._recordable =
       TELEMETRY_ENDPOINTS.includes(this.endpoint) &&
-      TELEMETRY_METHODS.includes(this.method);
+      (TELEMETRY_METHODS as readonly string[]).includes(this.method);
     this.streaming = Boolean(streaming);
     this.providerPinned = Boolean(providerPinned);
     this.model = typeof model === "string" && MODEL_RE.test(model) ? model : null;
@@ -570,7 +675,7 @@ export class RequestRecorder {
     this._finished = false;
   }
 
-  beginAttempt(baseUrl) {
+  beginAttempt(baseUrl: string) {
     try {
       this._commitCurrentAttempt();
       const started = this._now();
@@ -594,7 +699,7 @@ export class RequestRecorder {
    * engine's O(1) memory into O(maxRetries). The timeout phase of each
    * attempt rides in a parallel array.
    */
-  _storeAttempt(attempt, phase = "none") {
+  _storeAttempt(attempt: Attempt, phase: TelemetryTimeoutPhase = "none") {
     this._attemptCount = Math.max(this._attemptCount, attempt.index + 1);
     if (attempt.index < this.attempts.length) {
       this.attempts[attempt.index] = attempt;
@@ -614,7 +719,7 @@ export class RequestRecorder {
     return this._currentIndex ?? this.attempts.length;
   }
 
-  _previous(index) {
+  _previous(index: number) {
     if (this._currentAttempt?.index === index) return this._currentAttempt;
     return index < this.attempts.length ? this.attempts[index] : null;
   }
@@ -630,7 +735,7 @@ export class RequestRecorder {
     if (attempt === null || attempt.index <= this._committedAttemptIndex) return;
     const phase = this._currentPhase ?? "none";
     const attemptTimeoutMs = this._configuredTimeoutMs(phase);
-    const key = [
+    const key: CounterKey = [
       "attempt",
       this.endpoint,
       this.streaming,
@@ -665,7 +770,7 @@ export class RequestRecorder {
    * §3.3). `error_source` is never populated, exactly like the Python
    * reference: the engine never reads an error body.
    */
-  onResponse(statusCode, headers = null, retryAfterSeconds = null) {
+  onResponse(statusCode: number, headers: HeaderSource = null, retryAfterSeconds: number | null = null) {
     try {
       if (this._attemptStarted === null || this._currentHost === null) return;
       const elapsedMs = durationMs(this._attemptStarted, this._now());
@@ -725,14 +830,14 @@ export class RequestRecorder {
    * `bodyStarted` defaults to what the engine and codec reported through
    * onBodyStarted / onFirstEvent.
    */
-  onTransportError(error, { responseOpened = false, bodyStarted = this._bodyStarted } = {}) {
+  onTransportError(error: unknown, { responseOpened = false, bodyStarted = this._bodyStarted }: { responseOpened?: boolean; bodyStarted?: boolean } = {}) {
     try {
       if (this._attemptStarted === null || this._currentHost === null) return;
       let errorClass = classifyTransportError(error);
       let phase = TIMEOUT_PHASES.get(errorClass) ?? "none";
       const isTimeout =
-        TIMEOUT_ERROR_CLASSES.has(errorClass) || error?.name === "TimeoutError";
-      let outcome;
+        TIMEOUT_ERROR_CLASSES.has(errorClass) || (error as { name?: unknown } | null | undefined)?.name === "TimeoutError";
+      let outcome: TelemetryOutcome;
       if (isTimeout) {
         outcome = "timeout";
         if (bodyStarted) {
@@ -807,7 +912,7 @@ export class RequestRecorder {
   onMoved() {
     try {
       if (this.attempts.length === 0) return;
-      this.attempts[this.attempts.length - 1].moved = true;
+      this.attempts[this.attempts.length - 1]!.moved = true;
       if (this._currentAttempt !== null) this._currentAttempt.moved = true;
       this.failoverUsed = true;
     } catch {
@@ -924,7 +1029,7 @@ export class RequestRecorder {
   }
 
   /** The SDK timeout (ms) that governed a phase, or null (py _configured_timeout_ms). */
-  _configuredTimeoutMs(phase) {
+  _configuredTimeoutMs(phase: TelemetryTimeoutPhase) {
     // The JS `timeout` option is a TOTAL deadline; the SDK configures no
     // connect / first-byte / idle timeout of its own (undici's defaults are
     // the transport's, not the SDK's), so only the `total` phase has a
@@ -933,7 +1038,7 @@ export class RequestRecorder {
     return phase === "total" ? this.configuredTimeoutMs : null;
   }
 
-  _attemptRecord(attempt) {
+  _attemptRecord(attempt: Attempt) {
     return {
       index: attempt.index,
       host: attempt.host,
@@ -958,13 +1063,13 @@ export class RequestRecorder {
    * the COUNTER outcome is always the final attempt's own outcome (the
    * schema module's Outcome, never `exhausted`).
    */
-  _finish(exhausted) {
+  _finish(exhausted: boolean) {
     if (!this._recordable || this.attempts.length === 0 || this._firstStarted === null) {
       return;
     }
     this._commitCurrentAttempt();
     const attempts = this.attempts;
-    const final = this._currentAttempt ?? attempts[attempts.length - 1];
+    const final = this._currentAttempt ?? attempts[attempts.length - 1]!;
     const finalOutcome =
       exhausted && this._attemptCount > 1 && final.outcome !== "ok"
         ? "exhausted"
@@ -972,11 +1077,11 @@ export class RequestRecorder {
     const timeoutPhase = this._currentPhase ?? "none";
     const configuredTimeoutMs = this._configuredTimeoutMs(timeoutPhase);
     const totalMs = durationMs(this._firstStarted, this._now());
-    const event = {
+    const event: TelemetryEvent = {
       age_ms: 0,
       plane: "inference",
       endpoint: this.endpoint,
-      method: this.method,
+      method: this.method as TelemetryEvent["method"],
       streaming: this.streaming,
       provider_pinned: this.providerPinned,
       model: this.model,
@@ -991,7 +1096,7 @@ export class RequestRecorder {
     };
     const counterOutcome = finalOutcome === "exhausted" ? final.outcome : finalOutcome;
     const firstErrorClass = this._firstErrorClass;
-    const requestKey = [
+    const requestKey: CounterKey = [
       "request",
       this.endpoint,
       this.streaming,
@@ -1003,18 +1108,18 @@ export class RequestRecorder {
       timeoutFloorMet(timeoutPhase, configuredTimeoutMs),
       this.providerPinned,
     ];
-    const requestIncrement = {
+    const requestIncrement: CounterIncrement = {
       requests: 1,
       attempts: this._attemptCount,
       failover_used: this.failoverUsed ? 1 : 0,
-      first_attempt_success: attempts[0].outcome === "ok" ? 1 : 0,
+      first_attempt_success: attempts[0]!.outcome === "ok" ? 1 : 0,
       total_ms_hist: { [latencyBucket(totalMs)]: 1 },
     };
     const firstEventMs = this.ttftMs !== null ? this.ttftMs : final.ttfbMs ?? null;
     if (firstEventMs !== null) {
       requestIncrement.first_event_ms_hist = { [latencyBucket(firstEventMs)]: 1 };
     }
-    const counters = [[requestKey, requestIncrement], ...this._attemptCounterRows.values()];
+    const counters: TelemetryCounter[] = [[requestKey, requestIncrement], ...this._attemptCounterRows.values()];
     this.sink.onRequest(event, counters);
   }
 

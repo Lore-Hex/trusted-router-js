@@ -80,10 +80,48 @@ import {
   errorChain,
 } from "./telemetry.js";
 
+// The context is the facade's live state; narrower helpers require only the
+// fields they read. Keep the runtime dependency cycle with errors unchanged.
+import type { BodySettlement, StreamLifecycle, TelemetrySink } from "./telemetry.js";
+
+export type HeaderSource = Headers | Record<string, unknown> | null | undefined;
+interface HeaderOptions {
+  headers?: HeadersInit | null;
+  extraHeaders?: Record<string, string> | null;
+  idempotencyKey?: string | null;
+  apiKey?: string | null;
+  workspaceId?: string | null;
+  credentialFree?: boolean;
+}
+export interface TransportContext {
+  fetch: typeof globalThis.fetch;
+  defaultHeaders: HeadersInit;
+  apiKey: string | null;
+  workspaceId: string | null;
+  baseUrl: string;
+  baseUrls: string[];
+  regionAffinityPending: boolean;
+  regionAffinityPromise: Promise<string[]> | null;
+  regionProbeTimeout: number;
+  maxRetries: number;
+  regionalFailover: boolean;
+  telemetryEnabled?: boolean;
+  _telemetrySinkOrStart?: () => TelemetrySink | null | undefined;
+  _telemetryNow?: (() => number) | null;
+}
+export interface TransportRequestInit extends Omit<RequestInit, "body" | "headers">, Omit<HeaderOptions, "credentialFree"> {
+  body?: unknown;
+  timeout?: number | null;
+  _baseUrls?: string[] | null;
+  _streaming?: boolean;
+  _credentialFree?: boolean;
+}
+type BodySettled = (kind: BodySettlement, error?: unknown) => void;
+
 // ---- L1: policy kernel (pure, no I/O, no clock) -------------------------
 
-export function readHeader(headers, name) {
-  return headers?.get?.(name) ?? headers?.[name] ?? null;
+export function readHeader(headers: HeaderSource, name: string): unknown {
+  return (headers as { get?: (name: string) => unknown } | null | undefined)?.get?.(name) ?? (headers as Record<string, unknown> | null | undefined)?.[name] ?? null;
 }
 
 /**
@@ -106,12 +144,12 @@ export const MAX_RETRY_AFTER_SECONDS = 60;
 /** Clamp a parsed hint into [0, MAX_RETRY_AFTER_SECONDS], or reject it.
  *  Rejects exactly {NaN, ±Infinity, negatives} — the set the Python SDK
  *  rejects — so the two cannot drift on acceptance. */
-function boundedRetryAfter(seconds) {
+function boundedRetryAfter(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return null;
   return Math.min(seconds, MAX_RETRY_AFTER_SECONDS);
 }
 
-export function parseRetryAfter(headers) {
+export function parseRetryAfter(headers: HeaderSource) {
   // retry-after-ms wins when both are present: it is the more precise of the
   // two, and a server that sends it means the sub-second value.
   const rawMs = readHeader(headers, "retry-after-ms");
@@ -134,7 +172,7 @@ export function parseRetryAfter(headers) {
 //
 // Returns null when the server did not say, which leaves existing behaviour
 // untouched for older gateways and for deliberately unlabelled paths.
-export function shouldRetryVerdict(headers) {
+export function shouldRetryVerdict(headers: HeaderSource) {
   const raw = readHeader(headers, "x-should-retry");
   if (raw == null) return null;
   const value = String(raw).trim().toLowerCase();
@@ -143,14 +181,14 @@ export function shouldRetryVerdict(headers) {
   return null;
 }
 
-export function isRetryable(statusCode) {
+export function isRetryable(statusCode: number) {
   return statusCode === 429 || statusCode >= 500;
 }
 
 // May this move to a DIFFERENT domain. An explicit `x-should-retry: false`
 // forbids it outright: that is the gateway saying a provider already ran, which
 // is exactly when re-sending anywhere costs a second generation.
-export function isRegionalFailoverable(statusCode, headers) {
+export function isRegionalFailoverable(statusCode: number, headers?: HeaderSource) {
   if (shouldRetryVerdict(headers) === false) return false;
   return statusCode === 502 || statusCode === 503 || statusCode === 504;
 }
@@ -160,7 +198,7 @@ export function isRegionalFailoverable(statusCode, headers) {
 // This used to return `regionalFailover` for inference 502/503/504, so pinning
 // to one host ALSO stopped retrying the gateway statuses entirely: one switch
 // answering two questions. regionalFailover now governs only the destination.
-export function shouldRetryResponse(statusCode, _isInferenceRequest, _regionalFailover, headers) {
+export function shouldRetryResponse(statusCode: number, _isInferenceRequest: boolean, _regionalFailover: boolean, headers?: HeaderSource) {
   const verdict = shouldRetryVerdict(headers);
   if (verdict !== null) return verdict;
   return isRetryable(statusCode);
@@ -169,32 +207,32 @@ export function shouldRetryResponse(statusCode, _isInferenceRequest, _regionalFa
 // Whether transport failures are generally retryable. Replay safety for the
 // concrete request is enforced separately in the engine because it depends on
 // the method, key, and whether the failure is definitely pre-send.
-export function shouldRetryTransport(_isInferenceRequest, _regionalFailover) {
+export function shouldRetryTransport(_isInferenceRequest: boolean, _regionalFailover: boolean) {
   return true;
 }
 
 const REPLAY_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS", "TRACE"]);
 
-function requestIsReplayable(method, idempotencyKey) {
+function requestIsReplayable(method: string, idempotencyKey: string | null) {
   return REPLAY_SAFE_METHODS.has(String(method).toUpperCase()) || Boolean(idempotencyKey);
 }
 
-function transportDefinitelyFailedBeforeSend(error) {
-  const safeCodes = new Set([
+function transportDefinitelyFailedBeforeSend(error: unknown) {
+  const safeCodes = new Set<unknown>([
     "ENOTFOUND",
     "EAI_AGAIN",
     "ECONNREFUSED",
     "UND_ERR_CONNECT_TIMEOUT",
   ]);
   for (const link of errorChain(error)) {
-    if (safeCodes.has(link?.code)) return true;
+    if (safeCodes.has((link as { code?: unknown } | null | undefined)?.code)) return true;
   }
   return false;
 }
 
-export function transportError(error) {
+export function transportError(error: unknown) {
   const message =
-    error && typeof error.message === "string" ? error.message : String(error);
+    error && typeof (error as { message?: unknown }).message === "string" ? (error as { message: string }).message : String(error);
   return new InternalError(
     503,
     `TrustedRouter endpoint unavailable: ${message}`,
@@ -202,7 +240,7 @@ export function transportError(error) {
   );
 }
 
-export function retrySleepMs(attempt, retryAfterSeconds) {
+export function retrySleepMs(attempt: number, retryAfterSeconds?: number | null) {
   // Exponential backoff with full jitter, capped at 30s. Honor
   // retry-after as a floor — bounded, so a hostile or broken hint cannot
   // park the caller.
@@ -214,16 +252,16 @@ export function retrySleepMs(attempt, retryAfterSeconds) {
   return Math.min(Math.max(jittered, floor), Math.max(30_000, MAX_RETRY_AFTER_SECONDS * 1000));
 }
 
-export const sleep = (ms, signal = null) => new Promise((resolve, reject) => {
+export const sleep = (ms: number, signal: AbortSignal | null = null) => new Promise<void>((resolve, reject) => {
   if (signal?.aborted) {
     reject(signal.reason);
     return;
   }
-  let timer;
+  let timer: ReturnType<typeof setTimeout>;
   const onAbort = () => {
     clearTimeout(timer);
-    signal.removeEventListener("abort", onAbort);
-    reject(signal.reason);
+    signal!.removeEventListener("abort", onAbort);
+    reject(signal!.reason);
   };
   timer = setTimeout(() => {
     signal?.removeEventListener("abort", onAbort);
@@ -234,7 +272,7 @@ export const sleep = (ms, signal = null) => new Promise((resolve, reject) => {
 
 // ---- L2: plane router / candidate set ------------------------------------
 
-export function baseUrls(primaryBaseUrl) {
+export function baseUrls(primaryBaseUrl: string) {
   // This list MUST have more than one entry or failover cannot engage: the
   // advance in performRequest is guarded by
   // `baseIndex < candidates.length - 1`, so a single-entry list makes it
@@ -249,11 +287,11 @@ export function baseUrls(primaryBaseUrl) {
   return [...new Set([primary, ...ALIAS_API_BASE_URLS.map((u) => u.replace(/\/+$/, ""))])];
 }
 
-export function regionCandidates(primaryBaseUrl) {
+export function regionCandidates(primaryBaseUrl: string) {
   return [...new Set([...REGION_BASE_URLS, primaryBaseUrl.replace(/\/+$/, "")])];
 }
 
-export function healthyRegionStatus(statusCode) {
+export function healthyRegionStatus(statusCode: number) {
   return statusCode === 200 || statusCode === 401;
 }
 
@@ -265,7 +303,7 @@ export function healthyRegionStatus(statusCode) {
  *
  * Mutates ctx.baseUrls so `sdk.baseUrls` stays a live property.
  */
-export async function activeBaseUrls(ctx, signal = null) {
+export async function activeBaseUrls(ctx: TransportContext, signal: AbortSignal | null = null) {
   if (!ctx.regionAffinityPending) return ctx.baseUrls;
   if (!ctx.regionAffinityPromise) {
     ctx.regionAffinityPromise = rankRegionalBaseUrls(ctx);
@@ -275,10 +313,10 @@ export async function activeBaseUrls(ctx, signal = null) {
   return ctx.baseUrls;
 }
 
-function awaitWithSignal(promise, signal) {
+function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal | null): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
       signal.removeEventListener("abort", onAbort);
       reject(signal.reason);
@@ -297,7 +335,7 @@ function awaitWithSignal(promise, signal) {
   });
 }
 
-export async function rankRegionalBaseUrls(ctx) {
+export async function rankRegionalBaseUrls(ctx: Pick<TransportContext, "fetch" | "baseUrl" | "regionProbeTimeout">) {
   const candidates = regionCandidates(ctx.baseUrl);
   let winner = null;
   try {
@@ -355,7 +393,7 @@ export function newIdempotencyKey() {
   return `tr-req-${Date.now().toString(36)}-${suffix}`;
 }
 
-export function serializeBody(body, headers) {
+export function serializeBody(body: unknown, headers: Headers): unknown {
   if (!body || typeof body === "string") return body;
   if (typeof FormData !== "undefined" && body instanceof FormData) return body;
   if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams)
@@ -368,22 +406,23 @@ export function serializeBody(body, headers) {
   return JSON.stringify(body);
 }
 
-export function buildHeaders(ctx, {
+export function buildHeaders(ctx: Pick<TransportContext, "defaultHeaders" | "workspaceId" | "apiKey">, {
   headers,
   extraHeaders,
   idempotencyKey,
   apiKey,
   workspaceId,
   credentialFree = false,
-}) {
+}: HeaderOptions) {
   const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
-  for (const [k, v] of Object.entries(ctx.defaultHeaders)) out.set(k, v);
+  for (const [k, v] of Object.entries(ctx.defaultHeaders)) out.set(k, v as string);
   if (headers) {
     const it =
       headers instanceof Headers
         ? headers.entries()
         : Object.entries(headers);
-    for (const [k, v] of it) out.set(k, v);
+    // Tuple-array headers retain the existing Object.entries coercion.
+    for (const [k, v] of it) out.set(k, v as string);
   }
   if (extraHeaders) {
     for (const [k, v] of Object.entries(extraHeaders)) out.set(k, v);
@@ -415,7 +454,7 @@ export function buildHeaders(ctx, {
 
 // The Response readers that buffer the whole body. Each one settling means
 // the body is finished, so the caller's cancellation has nothing left to cut.
-const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"];
+const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"] as const;
 
 /**
  * Re-expose `response.body` as a stream that reports when it settles.
@@ -426,8 +465,8 @@ const BODY_READERS = ["arrayBuffer", "blob", "bytes", "formData", "json", "text"
  * Locking eagerly would have broken that, and every reader in BODY_READERS
  * with it.
  */
-function watchedBody(stream, onSettled, onBodyStarted) {
-  let reader = null;
+function watchedBody(stream: ReadableStream<Uint8Array>, onSettled: BodySettled, onBodyStarted: (() => void) | null) {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   let started = false;
   return new ReadableStream({
     async pull(controller) {
@@ -476,7 +515,7 @@ function watchedBody(stream, onSettled, onBodyStarted) {
  * A `clone()` is deliberately not instrumented: its body is a tee of this
  * one, and the relay is released when THIS response's body settles.
  */
-function releaseWhenBodySettles(response, onSettled, onBodyStarted = null) {
+function releaseWhenBodySettles(response: Response, onSettled: BodySettled, onBodyStarted: (() => void) | null = null) {
   try {
     const stream = response?.body ?? null;
     if (stream === null || typeof stream.getReader !== "function") {
@@ -486,12 +525,12 @@ function releaseWhenBodySettles(response, onSettled, onBodyStarted = null) {
       return response;
     }
     for (const name of BODY_READERS) {
-      const read = response[name];
+      const read: ((...args: unknown[]) => unknown) | undefined = response[name];
       if (typeof read !== "function") continue;
       Object.defineProperty(response, name, {
         configurable: true,
         writable: true,
-        value(...args) {
+        value(this: Response, ...args: unknown[]) {
           let pending;
           try {
             pending = read.apply(this, args);
@@ -512,7 +551,7 @@ function releaseWhenBodySettles(response, onSettled, onBodyStarted = null) {
         },
       });
     }
-    let watched = null;
+    let watched: ReadableStream<Uint8Array> | null = null;
     Object.defineProperty(response, "body", {
       configurable: true,
       get() {
@@ -568,7 +607,7 @@ function releaseWhenBodySettles(response, onSettled, onBodyStarted = null) {
  * an SDK timeout surfaces as an AbortError and is never mistaken for the
  * caller's reason nor recorded as a host fact.
  */
-export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
+export async function fetchWithTimeout(ctx: Pick<TransportContext, "fetch">, url: string | URL, init: RequestInit, timeoutMs: number | null) {
   const callerSignal = init.signal ?? null;
   if (!timeoutMs) {
     // No SDK deadline: the caller's signal goes to fetch untouched and already
@@ -576,7 +615,7 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
     return ctx.fetch(url, init);
   }
   const controller = new AbortController();
-  const relayAbort = () => controller.abort(callerSignal.reason);
+  const relayAbort = () => controller.abort(callerSignal!.reason);
   let released = false;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const release = () => {
@@ -601,12 +640,12 @@ export async function fetchWithTimeout(ctx, url, init, timeoutMs) {
   return releaseWhenBodySettles(response, release);
 }
 
-function operationSignal(callerSignal, timeoutMs) {
+function operationSignal(callerSignal: AbortSignal | null, timeoutMs: number | null) {
   if (!timeoutMs) {
     return { signal: callerSignal, ownsSignal: false, timedOut: false, release() {} };
   }
   const controller = new AbortController();
-  const relayAbort = () => controller.abort(callerSignal.reason);
+  const relayAbort = () => controller.abort(callerSignal!.reason);
   if (callerSignal?.aborted) relayAbort();
   else callerSignal?.addEventListener("abort", relayAbort, { once: true });
   let released = false;
@@ -634,24 +673,24 @@ function operationSignal(callerSignal, timeoutMs) {
 // ---- telemetry facts the engine derives from the logical request ----------
 
 /** The `model` a JSON body pins, for the beacon event (never any other field). */
-function bodyModel(body) {
+function bodyModel(body: unknown) {
   return body !== null &&
     typeof body === "object" &&
     !Array.isArray(body) &&
-    typeof body.model === "string"
-    ? body.model
+    typeof (body as Record<string, unknown>).model === "string"
+    ? (body as { model: string }).model
     : null;
 }
 
 /** §5.3 provider_pinned: the request forbade provider fallbacks. */
-function bodyProviderPinned(body) {
+function bodyProviderPinned(body: unknown) {
   const provider =
-    body !== null && typeof body === "object" && !Array.isArray(body) ? body.provider : null;
+    body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).provider : null;
   return Boolean(
     provider !== null &&
       typeof provider === "object" &&
       !Array.isArray(provider) &&
-      provider.allow_fallbacks === false,
+      (provider as Record<string, unknown>).allow_fallbacks === false,
   );
 }
 
@@ -661,7 +700,7 @@ function bodyProviderPinned(body) {
  * engine, and never reached through ctx.fetch. A ctx without one records
  * the header channel only.
  */
-function telemetrySink(ctx) {
+function telemetrySink(ctx: TransportContext) {
   try {
     return typeof ctx._telemetrySinkOrStart === "function"
       ? ctx._telemetrySinkOrStart() ?? null
@@ -691,7 +730,7 @@ function telemetrySink(ctx) {
  * is used. Any idempotency key supplied by a typed facade or caller is baked
  * into the immutable logical request before the loop and replayed verbatim.
  */
-export async function performRequest(ctx, method, path, init = {}) {
+export async function performRequest(ctx: TransportContext, method: string, path: string, init: TransportRequestInit = {}): Promise<Response> {
   const {
     _baseUrls = null,
     _streaming = false,
@@ -730,7 +769,7 @@ export async function performRequest(ctx, method, path, init = {}) {
   // exists to collect. Returns the error to surface, or null for "not a
   // cancellation"; never throws, so a hostile `cause` getter cannot fail a
   // request.
-  const callerCancellation = (error) => {
+  const callerCancellation = (error: unknown) => {
     try {
       for (const link of errorChain(error)) {
         if (
@@ -743,7 +782,7 @@ export async function performRequest(ctx, method, path, init = {}) {
         }
         // A bare `controller.abort()` and the SDK's own timeout both land
         // here; neither carries a reason to unwrap, so the throw stands.
-        if (link?.name === "AbortError") return { error, caller: false };
+        if ((link as { name?: unknown } | null | undefined)?.name === "AbortError") return { error, caller: false };
       }
     } catch {
       /* an unreadable chain is not a cancellation */
@@ -790,26 +829,26 @@ export async function performRequest(ctx, method, path, init = {}) {
   // How a rejection ends the logical call, for the record: the caller's own
   // cancellation ("caller"), the SDK `timeout` deadline ("deadline"), some
   // other bare abort ("abort"), or not a cancellation at all (null).
-  const cancellationKind = (error) => {
+  const cancellationKind = (error: unknown) => {
     const cancelled = callerCancellation(error);
     if (cancelled === null) return null;
     if (cancelled.caller) return "caller";
     return operation.timedOut ? "deadline" : "abort";
   };
-  const recordCancellation = (kind) => {
-    if (kind === "deadline") recorder.onDeadline();
-    else recorder.onAborted();
+  const recordCancellation = (kind: "caller" | "deadline" | "abort") => {
+    if (kind === "deadline") recorder!.onDeadline();
+    else recorder!.onAborted();
   };
   // The terminal Response: instrumented so the relay is released AND the
   // record is finished when the BODY settles — that is when total_ms, a
   // broken stream, a consumer that stopped reading, or a deadline reached
   // mid-body become known. Plain passthrough when neither is in play.
-  const terminal = (response) => {
+  const terminal = (response: Response) => {
     if (!operation.ownsSignal && recorder === null) return response;
     let settled = false;
     let decoderActive = false;
-    let pendingSettlement = null;
-    const settleNow = (kind, error) => {
+    let pendingSettlement: [BodySettlement, unknown] | null = null;
+    const settleNow: BodySettled = (kind, error) => {
       if (settled) return;
       settled = true;
       operation.release();
@@ -823,7 +862,7 @@ export async function performRequest(ctx, method, path, init = {}) {
       }
       recorder.finish({ exhausted });
     };
-    const streamLifecycle = {
+    const streamLifecycle: StreamLifecycle = {
       begin() {
         if (!settled) decoderActive = true;
       },
@@ -860,7 +899,7 @@ export async function performRequest(ctx, method, path, init = {}) {
     // retains a previous attempt's headers never sees them mutate.
     let attemptHeaders = requestHeaders;
     if (recorder) {
-      recorder.beginAttempt(candidates[baseIndex]);
+      recorder.beginAttempt(candidates[baseIndex]!);
       const clientHeader = recorder.headerValue();
       attemptHeaders = new Headers(requestHeaders);
       if (clientHeader) attemptHeaders.set("x-tr-client", clientHeader);
@@ -868,14 +907,15 @@ export async function performRequest(ctx, method, path, init = {}) {
     // ONE decision point per attempt. `decision.move` asks the policy kernel
     // whether the retry MAY change host; the shared tail below is the only
     // place that actually advances.
-    let decision;
+    let decision!: { move: boolean; retryAfter: number | null };
     let response = null;
     try {
-      const fetchInit = {
+      const fetchInit: RequestInit = {
         ...rest,
         method,
         headers: attemptHeaders,
-        body: requestBody,
+        // Fetch retains responsibility for coercing falsy non-body values.
+        body: requestBody as BodyInit | null,
         redirect: "manual",
       };
       if (operation.signal) fetchInit.signal = operation.signal;
@@ -964,11 +1004,11 @@ export async function performRequest(ctx, method, path, init = {}) {
 }
 
 /** Buffered mode: drain, decode, classify (invariant 9). */
-export async function requestJson(ctx, method, path, init = {}) {
+export async function requestJson(ctx: TransportContext, method: string, path: string, init: TransportRequestInit = {}): Promise<unknown> {
   return jsonOrThrow(await performRequest(ctx, method, path, init));
 }
 
 /** Streaming-open mode: hand back the terminal Response undrained. */
-export async function requestStream(ctx, method, path, init = {}) {
+export async function requestStream(ctx: TransportContext, method: string, path: string, init: TransportRequestInit = {}): Promise<Response> {
   return performRequest(ctx, method, path, { ...init, _streaming: true });
 }
