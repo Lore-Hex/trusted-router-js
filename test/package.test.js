@@ -24,6 +24,7 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
   assert.equal(pkg.name, "@lore-hex/trusted-router");
   assert.equal(pkg.version, "0.8.0");
   assert.equal(pkg.license, "Apache-2.0");
+  assert.equal(Object.hasOwn(pkg, "dependencies"), false);
   assert.deepEqual(pkg.bin, { trustedrouter: "./src/cli.js" });
   assert.deepEqual(pkg.files, ["src", "README.md", "LICENSE"]);
   assert.deepEqual(Object.keys(pkg.exports).sort(), [

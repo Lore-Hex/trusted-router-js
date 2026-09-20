@@ -46,8 +46,10 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/client.js && node --check src/attestation.js && node --check src/receipts.js && node --check src/session.js && node --check src/oauth.js && node --check src/cli.js && node --check src/cli/main.js && node --check src/internal/beacon.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/receipt-dependencies.js && node --check src/internal/sse.js && node --check src/internal/telemetry.js && node --check src/internal/transport.js && node --check src/internal/trust.js",
-    "test": "node --test"
+    "check": "node --check src/index.js && node --check src/client.js && node --check src/attestation.js && node --check src/receipts.js && node --check src/session.js && node --check src/oauth.js && node --check src/cli.js && node --check src/cli/main.js && node --check src/internal/beacon.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/receipt-dependencies.js && node --check src/internal/sse.js && node --check src/internal/telemetry.js && node --check src/internal/transport.js && node --check src/internal/trust.js && npm run typecheck",
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint:package": "publint && attw --pack . --profile esm-only"
   },
   "engines": {
     "node": ">=20"
@@ -65,5 +67,11 @@
     "cli",
     "attested",
     "confidential-computing"
-  ]
+  ],
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@types/node": "^20.17.9",
+    "publint": "^0.3.24",
+    "typescript": "^5.9.3"
+  }
 }
