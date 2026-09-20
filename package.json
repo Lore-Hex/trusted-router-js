@@ -1,7 +1,7 @@
 {
   "name": "@lore-hex/trusted-router",
   "version": "0.9.0",
-  "description": "JavaScript SDK and CLI for TrustedRouter — typed errors, retries, failover, and attestation verification.",
+  "description": "JavaScript SDK and CLI for TrustedRouter \u2014 typed errors, retries, failover, and attestation verification.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -49,7 +49,7 @@
   },
   "scripts": {
     "check": "npm run typecheck && node --test test/declaration-sync.test.js",
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "typecheck": "tsc -p tsconfig.json",
     "lint:package": "publint && attw --pack . --profile esm-only",
     "build": "node scripts/build.mjs",
