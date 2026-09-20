@@ -24,6 +24,7 @@ const boundaryRules = {
     },
   },
 };
+// strict-boolean-expressions stays off (89 sites); unsafe-*, no-assert-any, and the computed-lookup selector cover the audited classes.
 const rules = Object.fromEntries([
   "no-explicit-any", "no-unsafe-assignment", "no-unsafe-member-access", "no-unsafe-call",
   "no-unsafe-return", "no-unsafe-argument", "no-unnecessary-type-assertion",
