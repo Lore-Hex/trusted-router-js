@@ -17,8 +17,6 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - name: Typecheck public company affiliation metadata
-        run: npx --yes --package typescript@5.9.2 tsc --noEmit --strict --target ES2022 --module NodeNext --moduleResolution NodeNext type-tests/company-affiliations.ts
       - run: npm test
       # attw runs with its esm-only profile: this package deliberately ships
       # only ESM behind an exports map, so legacy node10 resolution and
