@@ -115,6 +115,51 @@ test("verify: happy path returns GatewayAttestation", async () => {
   assert.equal(result.issuer, GCP_ISSUER);
 });
 
+for (const [field, otherPin] of [
+  ["image_digest", { imageReference: "us-central1-docker.pkg.dev/proj/repo/img:tag" }],
+  ["image_reference", { imageDigest: "sha256:abc123" }],
+]) {
+  test(`verify: unpinned ${field} rejects non-string claims`, async () => {
+    const kp = await genKeypair();
+    const jwks = { keys: [await publicJwk(kp)] };
+    for (const value of [7, 0, {}, [], false]) {
+      const claims = await goodClaims();
+      claims.submods.container[field] = value;
+      await assert.rejects(verifyGatewayAttestation(await makeJwt(kp, claims), {
+        policy: { audience: "quill-cloud", imageDigest: null, imageReference: null, ...otherPin },
+        tlsCertDer: FAKE_CERT, jwks,
+      }), (error) => {
+        assert.ok(error instanceof AttestationVerificationError);
+        assert.match(error.message, /must be strings/);
+        return true;
+      });
+    }
+  });
+
+  test(`verify: absent unpinned ${field} returns a string`, async () => {
+    const kp = await genKeypair();
+    const claims = await goodClaims();
+    delete claims.submods.container[field];
+    const result = await verifyGatewayAttestation(await makeJwt(kp, claims), {
+      policy: { audience: "quill-cloud", imageDigest: null, imageReference: null, ...otherPin },
+      tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+    });
+    assert.equal(field === "image_digest" ? result.imageDigest : result.imageReference, "");
+  });
+}
+
+test("verify: validated release policy matches exact JWT pins", async () => {
+  const kp = await genKeypair();
+  const claims = await goodClaims();
+  claims.submods.container.image_digest = `sha256:${"ab".repeat(32)}`;
+  const policy = await policyFromTrustRelease({ release: claims.submods.container });
+  const result = await verifyGatewayAttestation(await makeJwt(kp, claims), {
+    policy, tlsCertDer: FAKE_CERT, jwks: { keys: [await publicJwk(kp)] },
+  });
+  assert.equal(result.imageDigest, policy.imageDigest);
+  assert.equal(result.imageReference, policy.imageReference);
+});
+
 test("verify: works when aud is a string not a list (RFC 7519)", async () => {
   const kp = await genKeypair();
   const jwks = { keys: [await publicJwk(kp)] };
@@ -416,8 +461,8 @@ test("verify: explicit policy.certSha256 mismatch raises", async () => {
 test("policyFromTrustRelease pulls digest + reference from release dict", async () => {
   const policy = await policyFromTrustRelease({
     release: {
-      image_digest: "sha256:beef",
-      accepted_image_digests: ["sha256:old", "sha256:beef"],
+      image_digest: `sha256:${"b".repeat(64)}`,
+      accepted_image_digests: [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`],
       image_reference: "us-central1-docker.pkg.dev/p/r/i:tag",
       accepted_image_references: [
         "us-central1-docker.pkg.dev/p/r/i:old",
@@ -425,8 +470,8 @@ test("policyFromTrustRelease pulls digest + reference from release dict", async 
       ],
     },
   });
-  assert.equal(policy.imageDigest, "sha256:beef");
-  assert.deepEqual(policy.imageDigests, ["sha256:old", "sha256:beef"]);
+  assert.equal(policy.imageDigest, `sha256:${"b".repeat(64)}`);
+  assert.deepEqual(policy.imageDigests, [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`]);
   assert.equal(policy.imageReference, "us-central1-docker.pkg.dev/p/r/i:tag");
   assert.deepEqual(policy.imageReferences, [
     "us-central1-docker.pkg.dev/p/r/i:old",

@@ -123,8 +123,8 @@ export function pinsImageIdentity(policy: AttestationPolicy | null | undefined):
  * `release` is omitted, fetches it from `trustReleaseUrl`. The
  * audience defaults to "quill-cloud" — the gateway hard-codes this.
  *
- * Throws AttestationVerificationError when the release carries no image
- * identity at all, rather than returning a policy that would verify nothing.
+ * Throws AttestationVerificationError when an image pin is malformed or the
+ * release carries no image identity at all.
  */
 export async function policyFromTrustRelease({
   release = null,
@@ -135,23 +135,19 @@ export async function policyFromTrustRelease({
   fetchImpl = globalThis.fetch,
 }: PolicyFromTrustReleaseOptions = {}): Promise<AttestationPolicy> {
   if (release === null) {
-    // The unported fetch returns unknown JSON. Preserve the existing property
-    // reads below; this projection does not validate or coerce the release.
-    release = await fetchTrustRelease({ trustUrl: trustReleaseUrl, fetchImpl }) as Record<string, unknown> | null;
+    release = await fetchTrustRelease({ trustUrl: trustReleaseUrl, fetchImpl });
   }
-  const imageDigest = release?.image_digest ?? null;
-  const publishedDigests = Array.isArray(release?.accepted_image_digests)
-    ? release.accepted_image_digests.filter(
-      (value: unknown): value is string => typeof value === "string" && value.length > 0,
-    )
-    : [];
-  const imageReference = release?.image_reference ?? null;
-  const publishedReferences = Array.isArray(release?.accepted_image_references)
-    ? release.accepted_image_references.filter(
-      (value: unknown): value is string => typeof value === "string" && value.length > 0,
-    )
-    : [];
-  const policy = {
+  const imageDigest = release?.image_digest == null
+    ? null : readImagePin(release.image_digest, "image_digest", IMAGE_DIGEST);
+  const publishedDigests = readImagePins(
+    release?.accepted_image_digests, "accepted_image_digests", IMAGE_DIGEST,
+  );
+  const imageReference = release?.image_reference == null
+    ? null : readImagePin(release.image_reference, "image_reference", IMAGE_REFERENCE);
+  const publishedReferences = readImagePins(
+    release?.accepted_image_references, "accepted_image_references", IMAGE_REFERENCE,
+  );
+  const policy: AttestationPolicy = {
     audience,
     certSha256,
     imageDigest,
@@ -164,7 +160,7 @@ export async function policyFromTrustRelease({
       : (imageReference ? [imageReference] : []),
     allowDebug,
   };
-  if (!pinsImageIdentity(policy as AttestationPolicy)) {
+  if (!pinsImageIdentity(policy)) {
     // A truncated body, an error page that happens to parse as JSON, or a
     // schema change all land here. Returning the policy anyway would leave the
     // caller believing it verified a specific build while both image checks
@@ -175,9 +171,7 @@ export async function policyFromTrustRelease({
       "refusing to build a policy that would accept any Confidential Space workload",
     );
   }
-  // Legacy releases do not validate scalar image fields. Keep the shipped
-  // return contract without changing malformed-input behavior in this port.
-  return policy as AttestationPolicy;
+  return policy;
 }
 
 /**
@@ -257,6 +251,34 @@ export async function verifyReceiptKeyAttestation(document: Uint8Array | string,
 }
 
 // ---- internals ---------------------------------------------------------
+
+// Verification uses exact string membership, so never trim, lowercase, or
+// otherwise normalize release pins. Digests include the sha256: prefix.
+const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
+const IMAGE_PATH_COMPONENT = "[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*";
+// Container repository name, optional registry/port, tag and/or digest.
+const IMAGE_REFERENCE = new RegExp(
+  "^(?:[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]+)?/)?" +
+  IMAGE_PATH_COMPONENT + "(?:/" + IMAGE_PATH_COMPONENT + ")*" +
+  "(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$",
+);
+
+function readImagePin(value: unknown, field: string, pattern: RegExp): string {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new AttestationVerificationError(`trust release ${field} is not a valid image pin`);
+  }
+  return value;
+}
+
+function readImagePins(value: unknown, field: string, pattern: RegExp): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new AttestationVerificationError(`trust release ${field} must be an array of image pins`);
+  }
+  const values: unknown[] = value;
+  // Array.from validates even holes in a caller-supplied sparse array.
+  return Array.from(values, (entry, index) => readImagePin(entry, `${field}[${index}]`, pattern));
+}
 
 function b64urlDecode(segment: string) {
   const padded = segment + "=".repeat((4 - (segment.length % 4)) % 4);
@@ -442,13 +464,16 @@ async function checkClaims(claims: Record<string, unknown>, {
 
   // These projections preserve the legacy unchecked nested property reads.
   const submods = ((claims.submods || {}) as Record<string, unknown>).container || {};
-  const imageDigest = (submods as Record<string, unknown>).image_digest || "";
-  const imageReference = (submods as Record<string, unknown>).image_reference || "";
+  const imageDigest = (submods as Record<string, unknown>).image_digest ?? "";
+  const imageReference = (submods as Record<string, unknown>).image_reference ?? "";
+  if (typeof imageDigest !== "string" || typeof imageReference !== "string") {
+    throw new AttestationVerificationError("JWT image_digest and image_reference must be strings when present");
+  }
 
   const acceptedImageDigests = Array.isArray(policy.imageDigests) && policy.imageDigests.length > 0
     ? policy.imageDigests
     : (policy.imageDigest ? [policy.imageDigest] : []);
-  if (acceptedImageDigests.length > 0 && !acceptedImageDigests.includes(imageDigest as string)) {
+  if (acceptedImageDigests.length > 0 && !acceptedImageDigests.includes(imageDigest)) {
     throw new AttestationVerificationError(
       `image_digest mismatch: workload=${JSON.stringify(imageDigest)}, ` +
       `policy=${JSON.stringify(acceptedImageDigests)}`,
@@ -457,7 +482,7 @@ async function checkClaims(claims: Record<string, unknown>, {
   const acceptedImageReferences = Array.isArray(policy.imageReferences) && policy.imageReferences.length > 0
     ? policy.imageReferences
     : (policy.imageReference ? [policy.imageReference] : []);
-  if (acceptedImageReferences.length > 0 && !acceptedImageReferences.includes(imageReference as string)) {
+  if (acceptedImageReferences.length > 0 && !acceptedImageReferences.includes(imageReference)) {
     throw new AttestationVerificationError(
       `image_reference mismatch: workload=${JSON.stringify(imageReference)}, ` +
       `policy=${JSON.stringify(acceptedImageReferences)}`,
@@ -544,9 +569,8 @@ async function checkClaims(claims: Record<string, unknown>, {
 
   return {
     certSha256: certSha,
-    // A policy can pin just one image field, leaving the other unchecked.
-    imageDigest: imageDigest as string,
-    imageReference: imageReference as string,
+    imageDigest,
+    imageReference,
     nonce: nonceMatch,
     expiresAt: claims.exp as number,
     issuer: claims.iss ?? null,
