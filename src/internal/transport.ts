@@ -87,7 +87,7 @@ import type { BodySettlement, StreamLifecycle, TelemetrySink } from "./telemetry
 export type HeaderSource = Headers | Record<string, unknown> | null | undefined;
 interface HeaderOptions {
   headers?: HeadersInit | null;
-  extraHeaders?: Record<string, string> | null;
+  extraHeaders?: HeadersInit | null;
   idempotencyKey?: string | null;
   apiKey?: string | null;
   workspaceId?: string | null;
@@ -406,6 +406,11 @@ export function serializeBody(body: unknown, headers: Headers): unknown {
   return JSON.stringify(body);
 }
 
+function mergeHeaders(out: Headers, init?: HeadersInit | null) {
+  // Normalize each source before merging so duplicate names follow fetch semantics.
+  for (const [name, value] of new Headers(init ?? undefined)) out.set(name, value);
+}
+
 export function buildHeaders(ctx: Pick<TransportContext, "defaultHeaders" | "workspaceId" | "apiKey">, {
   headers,
   extraHeaders,
@@ -415,18 +420,9 @@ export function buildHeaders(ctx: Pick<TransportContext, "defaultHeaders" | "wor
   credentialFree = false,
 }: HeaderOptions) {
   const out = new Headers({ "user-agent": DEFAULT_USER_AGENT });
-  for (const [k, v] of Object.entries(ctx.defaultHeaders)) out.set(k, v as string);
-  if (headers) {
-    const it =
-      headers instanceof Headers
-        ? headers.entries()
-        : Object.entries(headers);
-    // Tuple-array headers retain the existing Object.entries coercion.
-    for (const [k, v] of it) out.set(k, v as string);
-  }
-  if (extraHeaders) {
-    for (const [k, v] of Object.entries(extraHeaders)) out.set(k, v);
-  }
+  mergeHeaders(out, ctx.defaultHeaders);
+  mergeHeaders(out, headers);
+  mergeHeaders(out, extraHeaders);
   if (idempotencyKey) out.set("idempotency-key", idempotencyKey);
   const selectedWorkspaceId = workspaceId ?? ctx.workspaceId;
   if (selectedWorkspaceId)
