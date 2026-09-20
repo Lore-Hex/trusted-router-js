@@ -146,6 +146,59 @@ test("help, version, and no-command behavior follow the shared contract", async 
   assert.equal(constructed, 0);
 });
 
+for (const command of ["unknown-command-7f4a", "toString", "constructor", "hasOwnProperty", "__proto__"]) {
+  for (const help of [false, true]) {
+    test(`${help ? "command help" : "command options"} rejects unknown command ${command}`, async () => {
+      for (const flags of [["--stream", "--json"], [], ["--json"], ["--stream"]]) {
+        const suffix = help ? [...flags, "--help"] : flags;
+        const baseline = await invoke(["unknown-command-7f4a", ...suffix]);
+        const result = await invoke([command, ...suffix]);
+        const expectedError = flags.includes("--json")
+          ? `{"error":{"message":"unknown command: ${command}","type":"usage_error"},"ok":false}\n`
+          : `error: unknown command: ${command}\n`;
+        assert.equal(baseline.code, EXIT_USAGE);
+        assert.equal(result.code, baseline.code);
+        assert.equal(result.stdout, "");
+        assert.equal(result.stderr, expectedError);
+        assert.equal(result.stderr, baseline.stderr.replace("unknown-command-7f4a", command));
+        assert.deepEqual(result.clientOptions, []);
+      }
+    });
+  }
+}
+
+for (const option of ["unknown-option-7f4a", "toString", "constructor", "hasOwnProperty", "__proto__"]) {
+  test(`flag parsing rejects unknown option --${option}`, async () => {
+    for (const flags of [[], ["--json"]]) {
+      const baseline = await invoke(["models", "--unknown-option-7f4a", ...flags]);
+      const result = await invoke(["models", `--${option}`, ...flags]);
+      assert.equal(baseline.code, EXIT_USAGE);
+      assert.equal(result.code, EXIT_USAGE);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, baseline.stderr.replaceAll("unknown-option-7f4a", option));
+      if (flags.length > 0) {
+        assert.equal(JSON.parse(result.stderr).error.type, "usage_error");
+      }
+      assert.ok(result.stderr.includes(`Unknown option '--${option}'`));
+      assert.deepEqual(result.clientOptions, []);
+    }
+  });
+}
+
+test("own command and help entries retain byte-exact output", async () => {
+  const result = await invoke(["models", "--json"]);
+  assert.equal(result.code, EXIT_SUCCESS);
+  assert.equal(result.stdout, '{"command":"models","data":{"data":[{"id":"trustedrouter/auto"}]},"ok":true}\n');
+  assert.equal(result.stderr, "");
+  assert.equal(result.clientOptions.length, 1);
+
+  const help = await invoke(["models", "--help"]);
+  assert.equal(help.code, EXIT_SUCCESS);
+  assert.equal(help.stdout, "Usage: trustedrouter models [--json]\n\nList the model catalog.\n");
+  assert.equal(help.stderr, "");
+  assert.deepEqual(help.clientOptions, []);
+});
+
 test("chat sends the expected SDK request and prints only completion text", async () => {
   let request = null;
   let closed = 0;
