@@ -129,10 +129,95 @@ test("BrowserOAuthFlow.handleCallback requires a prior initiate()", async () => 
   const params = new URLSearchParams({ code: "c", state: "s" });
   await assert.rejects(flow.handleCallback(params), (error) => {
     assert.ok(error instanceof BrowserOAuthError);
-    assert.match(error.message, /no pending OAuth flow/);
+    assert.equal(error.message, "no pending OAuth flow found; call initiate() first");
     return true;
   });
 });
+
+for (const [label, stored, defect] of [
+  ["null", null, /expected an object with string codeVerifier/],
+  ["a string", "not-an-object", /expected an object with string codeVerifier/],
+  ["a number", 42, /expected an object with string codeVerifier/],
+  ["an array", [], /expected an object with string codeVerifier/],
+  ["missing codeVerifier", {}, /codeVerifier must be a non-empty string/],
+  ["numeric codeVerifier", { codeVerifier: 42, state: "s" }, /codeVerifier must be a non-empty string/],
+  ["object codeVerifier", { codeVerifier: {}, state: "s" }, /codeVerifier must be a non-empty string/],
+  ["null codeVerifier", { codeVerifier: null }, /codeVerifier must be a non-empty string/],
+  ["empty codeVerifier", { codeVerifier: "" }, /codeVerifier must be a non-empty string/],
+  ["numeric state", { codeVerifier: "v", state: 7 }, /state must be a string/],
+  ["null state", { codeVerifier: "v", state: null }, /state must be a string/],
+]) {
+  test(`BrowserOAuthFlow.handleCallback rejects stored ${label}`, async () => {
+    const storage = fakeStorage();
+    const storageKey = "custom_oauth";
+    storage.setItem(storageKey, JSON.stringify(stored));
+    let exchangeCalls = 0;
+    const client = {
+      exchangeOAuthKey: async () => {
+        exchangeCalls += 1;
+        return { key: "delegated" };
+      },
+    };
+    const flow = new BrowserOAuthFlow(CALLBACK_URL, { client, storage, storageKey });
+
+    await assert.rejects(flow.handleCallback("?code=c&state=s"), (error) => {
+      assert.ok(
+        error instanceof BrowserOAuthError,
+        `expected BrowserOAuthError, received ${error.name}: ${error.message}`,
+      );
+      assert.ok(!(error instanceof TypeError));
+      assert.match(error.message, /^stored OAuth state is malformed: /);
+      assert.match(error.message, defect);
+      return true;
+    });
+    assert.equal(exchangeCalls, 0);
+    assert.equal(storage.getItem(storageKey), null);
+  });
+}
+
+for (const [label, stored, params] of [
+  ["matching state", { codeVerifier: "v", state: "s" }, "?code=c&state=s"],
+  ["optional state", { codeVerifier: "v" }, "?code=c"],
+  ["empty state", { codeVerifier: "v", state: "" }, "?code=c"],
+]) {
+  test(`BrowserOAuthFlow.handleCallback accepts restored ${label}`, async () => {
+    const storage = fakeStorage();
+    storage.setItem("_tr_oauth", JSON.stringify(stored));
+    const exchanges = [];
+    const client = {
+      exchangeOAuthKey: async (options) => {
+        exchanges.push(options);
+        return { key: "delegated" };
+      },
+    };
+    const flow = new BrowserOAuthFlow(CALLBACK_URL, { client, storage });
+
+    assert.deepEqual(await flow.handleCallback(params), {
+      key: "delegated", user_id: null, identity: null,
+    });
+    assert.deepEqual(exchanges, [{ code: "c", codeVerifier: "v" }]);
+    assert.equal(storage.getItem("_tr_oauth"), null);
+  });
+}
+
+for (const [label, raw, message] of [
+  ["empty storage", "", "no pending OAuth flow found; call initiate() first"],
+  ["unparseable JSON", "{", "stored OAuth state is corrupt"],
+]) {
+  test(`BrowserOAuthFlow.handleCallback preserves the error for ${label}`, async () => {
+    const storage = fakeStorage();
+    storage.setItem("_tr_oauth", raw);
+    const client = new TrustedRouter({ fetchImpl: async () => new Response() });
+    const flow = new BrowserOAuthFlow(CALLBACK_URL, { client, storage });
+
+    await assert.rejects(flow.handleCallback("?code=c&state=s"), (error) => {
+      assert.ok(error instanceof BrowserOAuthError);
+      assert.equal(error.message, message);
+      return true;
+    });
+    assert.equal(storage.getItem("_tr_oauth"), raw);
+  });
+}
 
 test("BrowserOAuthFlow constructor validates its arguments", () => {
   const client = new TrustedRouter({ fetchImpl: async () => new Response() });
