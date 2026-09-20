@@ -7,13 +7,11 @@
     ],
     "declaration": true,
     "emitDeclarationOnly": true,
-    "allowJs": true,
-    "checkJs": false,
+    "allowJs": false,
     "rootDir": "src",
     "outDir": "dist"
   },
   "include": [
-    "src/**/*.js",
     "src/**/*.ts"
   ]
 }
