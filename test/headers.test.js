@@ -115,3 +115,14 @@ test("null optional header sources preserve defaults", async () => {
   });
   assert.equal(seen.get("x-trace"), "default");
 });
+
+test("Boundary audit: header reader normalizes tuples and ignores inherited keys", async () => {
+  const { readHeader } = await import("../dist/internal/transport.js");
+  for (const key of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+    assert.equal(readHeader({}, key), null);
+  }
+  assert.equal(readHeader([["Retry-After", "1"], ["retry-after", "2"]], "retry-after"), "1, 2");
+  assert.equal(readHeader(new Headers({ "Retry-After": "3" }), "retry-after"), "3");
+  assert.equal(readHeader({ "Retry-After": "4" }, "retry-after"), "4");
+  assert.equal(readHeader({ get: 42 }, "retry-after"), null);
+});

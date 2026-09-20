@@ -20,6 +20,7 @@
  * this stays a thin, faithful wrapper over the live backend contract.
  */
 
+import { isRecord } from "./internal/records.js";
 import type {
   TrustedRouter,
   CreateOAuthAuthorizationOptions,
@@ -192,20 +193,20 @@ export class BrowserOAuthFlow {
       throw new BrowserOAuthError("stored OAuth state is corrupt");
     }
 
-    if (typeof stored !== "object" || stored === null || Array.isArray(stored)) {
+    if (!isRecord(stored)) {
       this.clear();
       throw new BrowserOAuthError(
         "stored OAuth state is malformed: expected an object with string codeVerifier",
       );
     }
-    const codeVerifier = "codeVerifier" in stored ? stored.codeVerifier : undefined;
+    const codeVerifier = Object.hasOwn(stored, "codeVerifier") ? stored.codeVerifier : undefined;
     if (typeof codeVerifier !== "string" || codeVerifier.length === 0) {
       this.clear();
       throw new BrowserOAuthError(
         "stored OAuth state is malformed: codeVerifier must be a non-empty string",
       );
     }
-    if ("state" in stored) {
+    if (Object.hasOwn(stored, "state")) {
       if (typeof stored.state !== "string") {
         this.clear();
         throw new BrowserOAuthError(

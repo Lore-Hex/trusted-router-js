@@ -17,6 +17,7 @@
  * Node 20+ and any modern browser.
  */
 
+import { isRecord, errorText } from "./internal/records.js";
 import { fetchTrustRelease, DEFAULT_TRUST_RELEASE_URL } from "./internal/trust.js";
 
 export interface AttestationPolicy {
@@ -303,14 +304,15 @@ function parseJwt(document: Uint8Array | string) {
       `expected 3 JWT segments, got ${parts.length}`,
     );
   }
-  const [hB64, pB64, sB64] = parts as [string, string, string];
+  const [hB64, pB64, sB64] = parts;
+  if (hB64 === undefined || pB64 === undefined || sB64 === undefined) throw new AttestationVerificationError("missing JWT segment");
   let header: unknown, payload: unknown, signature;
   try {
     header = JSON.parse(bytesToString(b64urlDecode(hB64)));
     payload = JSON.parse(bytesToString(b64urlDecode(pB64)));
     signature = b64urlDecode(sB64);
   } catch (err) {
-    throw new AttestationVerificationError(`invalid JWT encoding: ${(err as { message: unknown }).message}`);
+    throw new AttestationVerificationError(`invalid JWT encoding: ${errorText(err)}`);
   }
   const signingInput = new TextEncoder().encode(`${hB64}.${pB64}`);
   return { header, payload, signingInput, signature };
@@ -328,11 +330,10 @@ async function fetchJwks(url: string, fetchImpl: typeof fetch): Promise<Jwks> {
     );
   }
   const data: unknown = await response.json();
-  if (!data || !Array.isArray((data as { keys?: unknown }).keys)) {
+  if (!isRecord(data) || !Array.isArray(data.keys) || !data.keys.every(isRecord)) {
     throw new AttestationVerificationError("JWKS response missing `keys` array");
   }
-  // Only the keys array is checked here; individual keys retain unknown fields.
-  return data as Jwks;
+  return { keys: data.keys };
 }
 
 async function verifyRs256(
@@ -346,7 +347,10 @@ async function verifyRs256(
       `unsupported JWT alg ${JSON.stringify(header.alg)}; expected RS256`,
     );
   }
-  const jwk = (jwks.keys || []).find((k) => k.kid === header.kid);
+  if (!isRecord(jwks) || !Array.isArray(jwks.keys) || !jwks.keys.every(isRecord)) {
+    throw new AttestationVerificationError("JWKS keys must be objects");
+  }
+  const jwk = jwks.keys.find((k) => k.kid === header.kid);
   if (!jwk) {
     throw new AttestationVerificationError(
       `no JWK with kid=${JSON.stringify(header.kid)} in JWKS — gateway key may have rotated`,
@@ -355,18 +359,21 @@ async function verifyRs256(
   if (jwk.kty !== "RSA") {
     throw new AttestationVerificationError("expected RSA key in JWKS");
   }
+  if (typeof jwk.n !== "string" || typeof jwk.e !== "string") {
+    throw new AttestationVerificationError("RSA JWK n and e must be strings");
+  }
   let key;
   try {
     key = await crypto.subtle.importKey(
       "jwk",
       // WebCrypto validates the RSA fields; pass them through unchanged.
-      { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true } as JsonWebKey,
+      { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
       { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
       false,
       ["verify"],
     );
   } catch (err) {
-    throw new AttestationVerificationError(`failed to import JWK: ${(err as { message: unknown }).message}`);
+    throw new AttestationVerificationError(`failed to import JWK: ${errorText(err)}`);
   }
   const ok = await crypto.subtle.verify(
     "RSASSA-PKCS1-v1_5",
@@ -387,9 +394,11 @@ async function verifiedJwtClaims(
   if (!jwks) {
     jwks = await fetchJwks(jwksUrl, fetchImpl);
   }
-  // Preserve legacy property access (including failures on null headers).
-  await verifyRs256(jwks, header as Record<string, unknown>, signingInput, signature);
-  return payload as Record<string, unknown>;
+  if (!isRecord(header) || !isRecord(payload)) {
+    throw new AttestationVerificationError("JWT header and claims must be objects");
+  }
+  await verifyRs256(jwks, header, signingInput, signature);
+  return payload;
 }
 
 async function checkClaims(claims: Record<string, unknown>, {
@@ -405,10 +414,10 @@ async function checkClaims(claims: Record<string, unknown>, {
     );
   }
   const now = Math.floor(Date.now() / 1000);
-  if (!Number.isSafeInteger(claims.exp)) {
+  if (typeof claims.exp !== "number" || !Number.isSafeInteger(claims.exp)) {
     throw new AttestationVerificationError("JWT is missing a valid expiration");
   }
-  if ((claims.exp as number) <= now) {
+  if ((claims.exp) <= now) {
     throw new AttestationVerificationError(
       `JWT expired at ${claims.exp} (now=${now})`,
     );
@@ -433,7 +442,7 @@ async function checkClaims(claims: Record<string, unknown>, {
       "attested workload does not report Secure Boot",
     );
   }
-  if (!["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"].includes(claims.hwmodel as string)) {
+  if (typeof claims.hwmodel !== "string" || !["GCP_AMD_SEV", "GCP_AMD_SEV_ES", "GCP_INTEL_TDX"].includes(claims.hwmodel)) {
     throw new AttestationVerificationError(
       `unsupported confidential hardware model ${JSON.stringify(claims.hwmodel)}`,
     );
@@ -462,10 +471,12 @@ async function checkClaims(claims: Record<string, unknown>, {
     );
   }
 
-  // These projections preserve the legacy unchecked nested property reads.
-  const submods = ((claims.submods || {}) as Record<string, unknown>).container || {};
-  const imageDigest = (submods as Record<string, unknown>).image_digest ?? "";
-  const imageReference = (submods as Record<string, unknown>).image_reference ?? "";
+  if (!isRecord(claims.submods) || !isRecord(claims.submods.container)) {
+    throw new AttestationVerificationError("JWT submods.container must be an object");
+  }
+  const submods = claims.submods.container;
+  const imageDigest = submods.image_digest ?? "";
+  const imageReference = submods.image_reference ?? "";
   if (typeof imageDigest !== "string" || typeof imageReference !== "string") {
     throw new AttestationVerificationError("JWT image_digest and image_reference must be strings when present");
   }
@@ -493,6 +504,7 @@ async function checkClaims(claims: Record<string, unknown>, {
   const eatNonces = claims.eat_nonce;
   let nonces = eatNonces || claims.nonces || [];
   if (typeof nonces === "string") nonces = [nonces];
+  if (!Array.isArray(nonces)) throw new AttestationVerificationError("JWT nonces must be a string or array");
   let nonceMatch = null;
   if (nonceHex !== null) {
     let noncePresent;
@@ -502,7 +514,7 @@ async function checkClaims(claims: Record<string, unknown>, {
         : (Array.isArray(eatNonces) ? eatNonces : []);
       noncePresent = hasNonce(receiptNonces, nonceHex);
     } else {
-      noncePresent = hasNonce(nonces as Iterable<unknown>, nonceHex);
+      noncePresent = hasNonce(nonces, nonceHex);
     }
     if (!noncePresent) {
       throw new AttestationVerificationError(
@@ -519,7 +531,7 @@ async function checkClaims(claims: Record<string, unknown>, {
       );
     }
     const exporterHex = bytesToHex(tlsExporter);
-    if (!hasNonce(nonces as Iterable<unknown>, exporterHex)) {
+    if (!hasNonce(nonces, exporterHex)) {
       throw new AttestationVerificationError(
         "TLS exporter not present in JWT nonces",
       );
@@ -539,7 +551,7 @@ async function checkClaims(claims: Record<string, unknown>, {
     // Cert binding
     certSha = claims.tls_cert_sha256
       || claims.workload_tls_cert_sha256
-      || (tlsCertDer ? findCertInNonces(nonces as Iterable<unknown>, await sha256Hex(tlsCertDer)) : null);
+      || (tlsCertDer ? findCertInNonces(nonces, await sha256Hex(tlsCertDer)) : null);
     if (typeof certSha !== "string" || certSha.length !== 64) {
       throw new AttestationVerificationError(
         "JWT does not commit to a TLS cert SHA-256 — cannot bind connection",
@@ -572,7 +584,7 @@ async function checkClaims(claims: Record<string, unknown>, {
     imageDigest,
     imageReference,
     nonce: nonceMatch,
-    expiresAt: claims.exp as number,
+    expiresAt: claims.exp,
     issuer: claims.iss ?? null,
     audience: policy.audience,
     rawClaims: claims,

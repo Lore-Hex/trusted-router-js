@@ -20,6 +20,7 @@
  * trusted-router-py (`_telemetry.py`), the contract's reference.
  */
 
+import { isRecord } from "./records.js";
 import { DEFAULT_CONTROL_BASE_URL, VERSION } from "./models.js";
 import {
   DEFAULT_TELEMETRY_PATH,
@@ -162,6 +163,7 @@ function runtimeToken() {
   const versions: Record<string, string | undefined> = hasProcess() ? process.versions ?? {} : {};
   let token;
   if (typeof versions.bun === "string") token = `bun/${versions.bun}`;
+  // Deno is an optional runtime extension; the version is narrowed to string before use.
   else if (typeof (globalThis as DenoGlobal).Deno?.version?.deno === "string") {
     token = `deno/${(globalThis as DenoGlobal).Deno!.version!.deno}`;
   } else if (typeof versions.node === "string") token = `node/${versions.node}`;
@@ -188,7 +190,7 @@ export function sdkIdentity() {
 /** Every field back inside the closed vocabulary, falling back per field (py _normalise_sdk_identity). */
 export function normaliseSdkIdentity(identity: unknown) {
   const fallback = sdkIdentity();
-  const source: JsonObject = identity && typeof identity === "object" ? identity as JsonObject : {};
+  const source: JsonObject = isRecord(identity) ? identity : {};
   const name = (SDK_NAMES as ReadonlySet<unknown>).has(source.name) ? source.name as string : fallback.name;
   const version =
     typeof source.version === "string" &&
@@ -259,7 +261,7 @@ function secureRandom() {
 }
 
 export function wireAttempt(attempt: unknown): WireAttempt {
-  const source: JsonObject = attempt && typeof attempt === "object" ? attempt as JsonObject : {};
+  const source: JsonObject = isRecord(attempt) ? attempt : {};
   const host = (TELEMETRY_HOSTS as readonly unknown[]).includes(source.host) ? source.host as typeof TELEMETRY_HOSTS[number] : "custom";
   const outcome = (TELEMETRY_OUTCOMES as readonly unknown[]).includes(source.outcome)
     ? source.outcome as typeof TELEMETRY_OUTCOMES[number]
@@ -303,11 +305,11 @@ export function wireAttempt(attempt: unknown): WireAttempt {
  * in reaches the wire.
  */
 export function wireEvent(event: unknown, now: number): WireEvent | null {
-  const source: JsonObject = event && typeof event === "object" ? event as JsonObject : {};
+  const source: JsonObject = isRecord(event) ? event : {};
   if (!Array.isArray(source.attempts)) return null;
   const attempts = (source.attempts as unknown[])
     .slice(0, MAX_ATTEMPTS_PER_EVENT)
-    .filter((item) => item && typeof item === "object")
+    .filter(isRecord)
     .map(wireAttempt);
   if (attempts.length === 0) return null;
   const completedAt = Number(source._completed_at);
@@ -389,15 +391,15 @@ export function normaliseCounterKey(key: unknown): CounterKey | null {
 }
 
 function mergeHistogram(target: Histogram, source: unknown) {
-  if (!source || typeof source !== "object") return;
-  for (const [bucket, count] of Object.entries(source as JsonObject)) {
+  if (!isRecord(source)) return;
+  for (const [bucket, count] of Object.entries(source)) {
     if (!(TELEMETRY_LATENCY_BUCKETS as readonly unknown[]).includes(bucket)) continue;
     target[bucket as keyof Histogram] = (target[bucket as keyof Histogram] ?? 0) + boundedInt(count, 0, MAX_COUNT);
   }
 }
 
 export function mergeCounterIncrement(target: CounterCounts, increment: unknown) {
-  const source: JsonObject = increment && typeof increment === "object" ? increment as JsonObject : {};
+  const source: JsonObject = isRecord(increment) ? increment : {};
   for (const field of ["requests", "attempts", "failover_used", "first_attempt_success"] as const) {
     target[field] = (target[field] ?? 0) + boundedInt(source[field] ?? 0, 0, MAX_COUNT);
   }
@@ -409,7 +411,7 @@ export function mergeCounterIncrement(target: CounterCounts, increment: unknown)
 
 /** The §5.4 ClientMinuteCounter row for one key and its merged counts. */
 export function counterRow(key: CounterKey, counts: CounterCounts, windowAgeMs: number) {
-  const source = counts && typeof counts === "object" ? counts : {};
+  const source = isRecord(counts) ? counts : {};
   return {
     window_start_age_ms: Math.min(MAX_AGE_MS, Math.max(0, boundedInt(windowAgeMs, 0, MAX_AGE_MS))),
     level: key[0],
@@ -693,7 +695,7 @@ export class TelemetryReporter implements TelemetrySink {
     for (const item of counters as unknown[]) {
       const rawKey = Array.isArray(item) ? (item as unknown[])[0] : undefined;
       const increment = Array.isArray(item) ? (item as unknown[])[1] : undefined;
-      if (!Array.isArray(rawKey) || !increment || typeof increment !== "object") {
+      if (!Array.isArray(rawKey) || !isRecord(increment)) {
         this._droppedSinceLast += 1;
         continue;
       }
@@ -717,7 +719,7 @@ export class TelemetryReporter implements TelemetrySink {
   onRequest(event: unknown, counters: unknown) {
     try {
       const now = Number(this._clock());
-      const source: JsonObject = event && typeof event === "object" ? event as JsonObject : {};
+      const source: JsonObject = isRecord(event) ? event : {};
       const reason = this._sampleReason(source);
       let sampled = null;
       let invalidSample = false;
@@ -892,21 +894,21 @@ export class TelemetryReporter implements TelemetrySink {
 
   /** §4: apply a 202's `policy` ONLY when it reduces volume. */
   _applyPolicy(payload: unknown, now: number) {
-    const policy = payload && typeof payload === "object" ? (payload as JsonObject).policy : null;
-    if (!policy || typeof policy !== "object") return;
+    const policy = isRecord(payload) ? payload.policy : null;
+    if (!isRecord(policy)) return;
     if (Object.hasOwn(policy, "success_sample_rate")) {
-      const rate = floatValue((policy as JsonObject).success_sample_rate);
+      const rate = floatValue(policy.success_sample_rate);
       if (rate !== null && rate >= 0 && rate < this.successSampleRate) {
         this.successSampleRate = rate;
       }
     }
     if (Object.hasOwn(policy, "flush_seconds")) {
-      const seconds = floatValue((policy as JsonObject).flush_seconds);
+      const seconds = floatValue(policy.flush_seconds);
       if (seconds !== null && seconds * 1000 > this.flushMs) {
         this.flushMs = Math.min(TELEMETRY_BACKOFF_MAX_MS, seconds * 1000);
       }
     }
-    const pauseSeconds = floatValue((policy as JsonObject).pause_seconds);
+    const pauseSeconds = floatValue(policy.pause_seconds);
     if (pauseSeconds !== null && pauseSeconds >= 0 && pauseSeconds <= MAX_PAUSE_SECONDS) {
       this._pausedUntil = Math.max(this._pausedUntil, now + pauseSeconds * 1000);
     }

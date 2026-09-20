@@ -12,6 +12,7 @@
  * raw payload").
  */
 
+import { isRecord } from "./records.js";
 import { parseRetryAfter } from "./transport.js";
 
 export class TrustedRouterError extends Error {
@@ -27,12 +28,8 @@ export class TrustedRouterError extends Error {
     this.name = "TrustedRouterError";
     this.statusCode = statusCode;
     this.payload = payload;
-    // Property projections preserve the original reads, including boxed primitives
-    // and getters. Values remain unknown until the existing checks narrow them.
-    const detail = ((payload as { error?: unknown } | null | undefined)?.error &&
-      typeof (payload as { error: unknown }).error === "object"
-      ? (payload as { error: object }).error
-      : (payload && typeof payload === "object" ? payload : {})) as Record<string, unknown>;
+    const record = isRecord(payload) ? payload : {};
+    const detail = isRecord(record.error) ? record.error : record;
     this.layer = typeof detail.layer === "string" ? detail.layer : null;
     this.source = typeof detail.source === "string" ? detail.source : null;
     this.provider = typeof detail.provider === "string" ? detail.provider : null;
@@ -110,12 +107,9 @@ export function classifyError(statusCode: number, message: string, payload?: unk
 }
 
 export function errorMessage(payload: unknown): unknown {
-  if (payload && typeof payload === "object") {
-    if ((payload as Record<string, unknown>).error && typeof (payload as Record<string, unknown>).error === "object") {
-      return ((payload as Record<string, unknown>).error as Record<string, unknown>).message ||
-        ((payload as Record<string, unknown>).error as Record<string, unknown>).type;
-    }
-    return (payload as Record<string, unknown>).message;
+  if (isRecord(payload)) {
+    if (isRecord(payload.error)) return payload.error.message || payload.error.type;
+    return payload.message;
   }
   return undefined;
 }
@@ -134,7 +128,7 @@ export async function jsonOrThrow(response: Response): Promise<unknown> {
     throw classifyError(
       response.status,
       // Error's constructor performs the original coercion of a truthy JSON value.
-      (errorMessage(payload) || response.statusText || "TrustedRouter error") as string,
+      String(errorMessage(payload) || response.statusText || "TrustedRouter error"),
       payload,
       parseRetryAfter(response.headers),
     );
@@ -155,7 +149,7 @@ export async function throwFromResponse(response: Response): Promise<never> {
   throw classifyError(
     response.status,
     // Error's constructor performs the original coercion of a truthy JSON value.
-    (errorMessage(payload) || response.statusText || "TrustedRouter error") as string,
+    String(errorMessage(payload) || response.statusText || "TrustedRouter error"),
     payload,
     parseRetryAfter(response.headers),
   );

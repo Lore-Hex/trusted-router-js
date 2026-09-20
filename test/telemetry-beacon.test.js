@@ -1184,3 +1184,44 @@ test("the beacon flushes once on beforeExit, within 2 s, and never keeps the pro
   assert.ok(slow.elapsed >= 1_500, `aborted too early: ${slow.elapsed} ms`);
   assert.ok(slow.elapsed < 8_000, `the exit flush must be bounded by 2 s: ${slow.elapsed} ms`);
 });
+
+for (const boundary of ["identity", "attempt", "event", "event attempts", "increment", "histogram", "counter row", "counter input", "request", "policy envelope", "policy"]) {
+  test(`Boundary audit: beacon ${boundary} rejects array records`, async () => {
+    const { wireAttempt, wireEvent, mergeCounterIncrement, counterRow } = await import("../dist/internal/beacon.js");
+    const arrayRecord = (record) => Object.assign([], record);
+    const validEvent = event({ sample_reason: "random", sample_rate: 1 });
+    if (boundary === "identity") {
+      assert.deepEqual(normaliseSdkIdentity(arrayRecord({ version: "99.0.0" })), normaliseSdkIdentity({}));
+    } else if (boundary === "attempt") {
+      assert.deepEqual(wireAttempt(arrayRecord(attempt())), wireAttempt({}));
+    } else if (boundary === "event") {
+      assert.equal(wireEvent(arrayRecord(validEvent), 0), null);
+    } else if (boundary === "event attempts") {
+      assert.equal(wireEvent({ ...validEvent, attempts: [[]] }, 0), null);
+    } else if (boundary === "increment") {
+      const counts = {};
+      mergeCounterIncrement(counts, arrayRecord({ requests: 10 }));
+      assert.equal(counts.requests, 0);
+    } else if (boundary === "histogram") {
+      const counts = {};
+      mergeCounterIncrement(counts, { total_ms_hist: arrayRecord({ lt100: 10 }) });
+      assert.deepEqual(counts.total_ms_hist, {});
+    } else if (boundary === "counter row") {
+      assert.equal(counterRow(counterKey(), arrayRecord({ requests: 10 }), 0).requests, 1);
+    } else {
+      const reporter = new TelemetryReporter({ fetchImpl: async () => accepted(), successSampleRate: 1 });
+      if (boundary === "counter input") {
+        reporter._mergeCounters([[counterKey(), []]]);
+        assert.equal(reporter._currentCounters.size, 0);
+      } else if (boundary === "request") {
+        reporter.onRequest(arrayRecord(validEvent), []);
+        assert.equal(reporter._events.length, 0);
+      } else {
+        const policy = { success_sample_rate: 0 };
+        reporter._applyPolicy(boundary === "policy" ? { policy: arrayRecord(policy) } : arrayRecord({ policy }), 0);
+        assert.equal(reporter.successSampleRate, 1);
+      }
+      await reporter.close();
+    }
+  });
+}

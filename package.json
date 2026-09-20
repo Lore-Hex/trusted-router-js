@@ -51,7 +51,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint:package": "publint && attw --pack . --profile esm-only",
     "build": "node scripts/build.mjs",
-    "pretest": "npm run build"
+    "pretest": "npm run build",
+    "lint": "eslint src test"
   },
   "engines": {
     "node": ">=20"
@@ -73,7 +74,10 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^20.17.9",
+    "@typescript-eslint/eslint-plugin": "^8.67.0",
+    "@typescript-eslint/parser": "^8.67.0",
     "esbuild": "^0.28.1",
+    "eslint": "^9.39.4",
     "publint": "^0.3.24",
     "typescript": "^5.9.3"
   }

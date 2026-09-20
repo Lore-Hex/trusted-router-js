@@ -514,3 +514,51 @@ test("AttestationVerificationError exposes name", () => {
   assert.equal(e.name, "AttestationVerificationError");
   assert.equal(e.message, "x");
 });
+
+test("Boundary audit: JWT header and claims must be records", async () => {
+  const kp = await genKeypair();
+  const jwks = { keys: [await publicJwk(kp)] };
+  const policy = { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null };
+  for (const payload of [null, [], 7]) {
+    await assert.rejects(verifyGatewayAttestation(await makeJwt(kp, payload), { policy, jwks }),
+      (error) => error instanceof AttestationVerificationError && /header and claims must be objects/.test(error.message));
+  }
+  const jwt = await makeJwt(kp, await goodClaims());
+  const parts = new TextDecoder().decode(jwt).split(".");
+  parts[0] = b64url(enc("null"));
+  await assert.rejects(verifyGatewayAttestation(parts.join("."), { policy, jwks }), /header and claims must be objects/);
+});
+
+test("Boundary audit: JWKS fetched and supplied keys must be records", async () => {
+  const kp = await genKeypair();
+  const policy = { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null };
+  const jwt = await makeJwt(kp, await goodClaims());
+  for (const keys of [[null], [[]], "bad"]) {
+    await assert.rejects(verifyGatewayAttestation(jwt, { policy, jwks: { keys } }),
+      (error) => error instanceof AttestationVerificationError && /keys must be objects/.test(error.message));
+    await assert.rejects(verifyGatewayAttestation(jwt, {
+      policy, fetchImpl: async () => new Response(JSON.stringify({ keys })),
+    }), (error) => error instanceof AttestationVerificationError && /JWKS response/.test(error.message));
+  }
+});
+
+test("Boundary audit: RSA JWK fields must be strings", async () => {
+  const kp = await genKeypair();
+  const jwk = await publicJwk(kp);
+  const policy = { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null };
+  await assert.rejects(verifyGatewayAttestation(await makeJwt(kp, await goodClaims()), {
+    policy, jwks: { keys: [{ ...jwk, n: [] }] },
+  }), /RSA JWK n and e must be strings/);
+});
+
+test("Boundary audit: attestation nested records and nonce shape", async () => {
+  const kp = await genKeypair();
+  const jwks = { keys: [await publicJwk(kp)] };
+  const policy = { audience: "quill-cloud", imageDigest: "sha256:abc123", imageReference: null };
+  for (const submods of [[], null, { container: [] }, { container: null }]) {
+    await assert.rejects(verifyGatewayAttestation(await makeJwt(kp, { ...await goodClaims(), submods }), { policy, jwks }),
+      /submods.container must be an object/);
+  }
+  await assert.rejects(verifyGatewayAttestation(await makeJwt(kp, { ...await goodClaims(), eat_nonce: {} }), { policy, jwks }),
+    /nonces must be a string or array/);
+});

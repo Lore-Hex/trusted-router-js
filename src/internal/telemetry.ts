@@ -1,3 +1,5 @@
+import { readHeader } from "./transport.js";
+import { isRecord } from "./records.js";
 /**
  * L5 — CLIENT RELIABILITY TELEMETRY: recording (contract v1 of
  * docs/client-telemetry.md in Lore-Hex/quill-router).
@@ -372,8 +374,8 @@ export function errorChain(error: unknown): unknown[] {
   ) {
     chain.push(current);
     seen.add(current);
-    // Read the original property even on boxed primitives; callers handle getters.
-    current = (current as { cause?: unknown }).cause;
+    // Only record-like error links carry causes; callers handle hostile getters.
+    current = isRecord(current) ? current.cause : undefined;
   }
   return chain;
 }
@@ -495,10 +497,10 @@ export function classifyTransportError(error: unknown): TelemetryErrorClass {
     const chain = errorChain(error);
     for (const [errorClass, matches] of ERROR_CLASSIFIERS) {
       for (const item of chain) {
-        const code = typeof (item as { code?: unknown } | null | undefined)?.code === "string" ? (item as { code: string }).code : "";
-        const name = typeof (item as { name?: unknown } | null | undefined)?.name === "string" ? (item as { name: string }).name : "";
-        const message = typeof (item as { message?: unknown } | null | undefined)?.message === "string" ? (item as { message: string }).message : "";
-        const syscall = typeof (item as { syscall?: unknown } | null | undefined)?.syscall === "string" ? (item as { syscall: string }).syscall : "";
+        const code = isRecord(item) && typeof item.code === "string" ? item.code : "";
+        const name = isRecord(item) && typeof item.name === "string" ? item.name : "";
+        const message = isRecord(item) && typeof item.message === "string" ? item.message : "";
+        const syscall = isRecord(item) && typeof item.syscall === "string" ? item.syscall : "";
         if (matches(code, name, message, syscall)) return errorClass;
       }
     }
@@ -516,11 +518,7 @@ function durationMs(start: number, end: number) {
 function readHeaderValue(headers: HeaderSource, name: string): unknown {
   if (headers === null || headers === undefined) return null;
   try {
-    if (typeof (headers as { get?: (name: string) => unknown }).get === "function") return (headers as { get: (name: string) => unknown }).get(name) ?? null;
-    const wanted = name.toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-      if (String(key).toLowerCase() === wanted) return value ?? null;
-    }
+    return readHeader(headers, name);
   } catch {
     /* telemetry never fails a request */
   }
@@ -836,7 +834,7 @@ export class RequestRecorder {
       let errorClass = classifyTransportError(error);
       let phase = TIMEOUT_PHASES.get(errorClass) ?? "none";
       const isTimeout =
-        TIMEOUT_ERROR_CLASSES.has(errorClass) || (error as { name?: unknown } | null | undefined)?.name === "TimeoutError";
+        TIMEOUT_ERROR_CLASSES.has(errorClass) || (isRecord(error) ? error.name : undefined) === "TimeoutError";
       let outcome: TelemetryOutcome;
       if (isTimeout) {
         outcome = "timeout";
@@ -1081,6 +1079,7 @@ export class RequestRecorder {
       age_ms: 0,
       plane: "inference",
       endpoint: this.endpoint,
+      // _recordable checked method against TELEMETRY_METHODS before an event can be emitted.
       method: this.method as TelemetryEvent["method"],
       streaming: this.streaming,
       provider_pinned: this.providerPinned,

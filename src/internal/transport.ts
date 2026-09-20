@@ -66,6 +66,7 @@
  *      across SDKs — moved verbatim, never "fixed", never tested.
  */
 
+import { isRecord, ownProperty, errorText } from "./records.js";
 import { InternalError, jsonOrThrow } from "./errors.js";
 import {
   ALIAS_API_BASE_URLS,
@@ -84,7 +85,7 @@ import {
 // fields they read. Keep the runtime dependency cycle with errors unchanged.
 import type { BodySettlement, StreamLifecycle, TelemetrySink } from "./telemetry.js";
 
-export type HeaderSource = Headers | Record<string, unknown> | null | undefined;
+export type HeaderSource = HeadersInit | Record<string, unknown> | null | undefined;
 interface HeaderOptions {
   headers?: HeadersInit | null;
   extraHeaders?: HeadersInit | null;
@@ -121,7 +122,18 @@ type BodySettled = (kind: BodySettlement, error?: unknown) => void;
 // ---- L1: policy kernel (pure, no I/O, no clock) -------------------------
 
 export function readHeader(headers: HeaderSource, name: string): unknown {
-  return (headers as { get?: (name: string) => unknown } | null | undefined)?.get?.(name) ?? (headers as Record<string, unknown> | null | undefined)?.[name] ?? null;
+  if (headers == null) return null;
+  if (headers instanceof Headers || Array.isArray(headers)) {
+    const normalized = new Headers();
+    mergeHeaders(normalized, headers);
+    return normalized.get(name);
+  }
+  if (typeof headers.get === "function") {
+    const value: unknown = Reflect.apply(headers.get, headers, [name]);
+    return value ?? null;
+  }
+  const key = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase());
+  return key === undefined ? null : ownProperty(headers, key) ?? null;
 }
 
 /**
@@ -225,14 +237,14 @@ function transportDefinitelyFailedBeforeSend(error: unknown) {
     "UND_ERR_CONNECT_TIMEOUT",
   ]);
   for (const link of errorChain(error)) {
-    if (safeCodes.has((link as { code?: unknown } | null | undefined)?.code)) return true;
+    if (safeCodes.has((isRecord(link) ? link.code : undefined))) return true;
   }
   return false;
 }
 
 export function transportError(error: unknown) {
   const message =
-    error && typeof (error as { message?: unknown }).message === "string" ? (error as { message: string }).message : String(error);
+    errorText(error);
   return new InternalError(
     503,
     `TrustedRouter endpoint unavailable: ${message}`,
@@ -670,23 +682,17 @@ function operationSignal(callerSignal: AbortSignal | null, timeoutMs: number | n
 
 /** The `model` a JSON body pins, for the beacon event (never any other field). */
 function bodyModel(body: unknown) {
-  return body !== null &&
-    typeof body === "object" &&
-    !Array.isArray(body) &&
-    typeof (body as Record<string, unknown>).model === "string"
-    ? (body as { model: string }).model
+  return isRecord(body) && typeof body.model === "string"
+    ? body.model
     : null;
 }
 
 /** §5.3 provider_pinned: the request forbade provider fallbacks. */
 function bodyProviderPinned(body: unknown) {
   const provider =
-    body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).provider : null;
+    isRecord(body) ? body.provider : null;
   return Boolean(
-    provider !== null &&
-      typeof provider === "object" &&
-      !Array.isArray(provider) &&
-      (provider as Record<string, unknown>).allow_fallbacks === false,
+    isRecord(provider) && provider.allow_fallbacks === false,
   );
 }
 
@@ -774,11 +780,12 @@ export async function performRequest(ctx: TransportContext, method: string, path
           link === callerSignal.reason
         ) {
           // The caller's reason propagates unwrapped, whatever wrapped it.
-          return { error: callerSignal.reason, caller: true };
+          const reason: unknown = callerSignal.reason;
+          return { error: reason, caller: true };
         }
         // A bare `controller.abort()` and the SDK's own timeout both land
         // here; neither carries a reason to unwrap, so the throw stands.
-        if ((link as { name?: unknown } | null | undefined)?.name === "AbortError") return { error, caller: false };
+        if ((isRecord(link) ? link.name : undefined) === "AbortError") return { error, caller: false };
       }
     } catch {
       /* an unreadable chain is not a cancellation */

@@ -1,3 +1,4 @@
+import { errorText } from "./internal/records.js";
 import {
   AttestationVerificationError,
   EXPORTER_LABEL,
@@ -99,6 +100,7 @@ export async function verifyGatewaySession({
   try {
     await waitForSecureConnect(socket, timeoutMs);
     assertTlsAuthorized(socket);
+    // Node TLS accepts an omitted context; older @types/node requires a third argument.
     const exporter = (socket.exportKeyingMaterial as ExportKeyingMaterial)(EXPORTER_LENGTH, EXPORTER_LABEL);
     const peer = socket.getPeerCertificate(true);
     if (!peer?.raw) {
@@ -162,6 +164,7 @@ export async function fetchAttestationAgain(session: GatewaySession, {
     ...meta,
     nonceHex,
   });
+  // Node TLS accepts an omitted context; older @types/node requires a third argument.
   const followupExporter = (session.socket.exportKeyingMaterial as ExportKeyingMaterial)(
     EXPORTER_LENGTH,
     EXPORTER_LABEL,
@@ -223,7 +226,7 @@ function parseGatewayUrl(baseUrl: string | undefined): GatewayUrl {
   try {
     url = new URL(baseUrl);
   } catch (err) {
-    throw new AttestationVerificationError(`invalid baseUrl: ${(err as { message: unknown }).message}`);
+    throw new AttestationVerificationError(`invalid baseUrl: ${errorText(err)}`);
   }
   if (url.protocol !== "https:") {
     throw new AttestationVerificationError("baseUrl must use https");
@@ -288,6 +291,7 @@ async function assertSocketPinnable(socket: TLSSocket, state: ReturnType<typeof 
     socket.readableEnded === true ||
     socket.writable === false ||
     socket.writableEnded === true ||
+    // Native Node socket; older runtime typings omit this optional compatibility flag.
     (socket as TLSSocket & { writableDestroyed?: boolean }).writableDestroyed === true
   ) {
     throw new AttestationVerificationError(

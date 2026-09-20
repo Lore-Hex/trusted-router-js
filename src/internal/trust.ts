@@ -12,6 +12,7 @@
  * stays OUTSIDE the transport engine by design (no retries, no failover).
  */
 
+import { requireRecord } from "./records.js";
 import { jsonOrThrow } from "./errors.js";
 import { DEFAULT_TRUST_RELEASE_URL } from "./models.js";
 import { DEFAULT_USER_AGENT } from "./transport.js";
@@ -25,13 +26,13 @@ export async function fetchTrustRelease({
   if (!fetchImpl) {
     throw new Error("A fetch implementation is required");
   }
-  return jsonOrThrow(
+  return requireRecord(await jsonOrThrow(
     await fetchImpl(trustUrl, {
       headers: { "user-agent": DEFAULT_USER_AGENT },
       credentials: "omit",
       redirect: "manual",
     }),
-  ) as Promise<Record<string, unknown>>;
+  ));
 }
 
 export const trustRelease = fetchTrustRelease;
