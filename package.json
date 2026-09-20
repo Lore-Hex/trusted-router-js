@@ -28,10 +28,12 @@
     "./session": {
       "types": "./dist/session.d.ts",
       "import": "./dist/session.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "src",
     "README.md",
     "LICENSE"
   ],
@@ -52,7 +54,8 @@
     "lint:package": "publint && attw --pack . --profile esm-only",
     "build": "node scripts/build.mjs",
     "pretest": "npm run build",
-    "lint": "eslint src test"
+    "lint": "eslint src test",
+    "test:mutations": "node scripts/mutation-check.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -80,5 +83,9 @@
     "eslint": "^9.39.4",
     "publint": "^0.3.24",
     "typescript": "^5.9.3"
-  }
+  },
+  "sideEffects": [
+    "./dist/cli.js",
+    "./src/cli.ts"
+  ]
 }

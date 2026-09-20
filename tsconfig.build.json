@@ -9,7 +9,8 @@
     "emitDeclarationOnly": true,
     "allowJs": false,
     "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "declarationMap": true
   },
   "include": [
     "src/**/*.ts"

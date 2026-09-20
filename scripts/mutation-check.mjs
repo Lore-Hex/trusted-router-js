@@ -1,7 +1,9 @@
 // Run after npm run build. Each mutation is restored even when its check throws.
 // These are runtime regression checks: esbuild permits the old unsafe TS assertions.
-import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { buildSync } from "esbuild";
 
 const cases = [];
@@ -78,12 +80,13 @@ mutation("telemetry timeout record", "internal/telemetry.ts", '(isRecord(error) 
 function compile(file) {
   buildSync({ entryPoints: [file], outfile: file.replace(/^src\//, "dist/").replace(/\.ts$/, ".js"), format: "esm", platform: "node", target: "node20", logLevel: "silent" });
 }
-const report = [];
-for (const c of cases) {
+export function checkSourceMutation(c) {
   const original = readFileSync(c.file, "utf8");
   // Mutate every occurrence of the same boundary (message paths and event entry points).
   const mutant = typeof c.before === "string" ? original.split(c.before).join(c.after) : original.replace(c.before, c.after);
   if (mutant === original) throw new Error(`Mutation target missing: ${c.name}`);
+  const output = c.file.replace(/^src\//, "dist/").replace(/\.ts$/, ".js");
+  const originalOutput = readFileSync(output);
   try {
     writeFileSync(c.file, mutant);
     compile(c.file);
@@ -91,26 +94,36 @@ for (const c of cases) {
     const failed = /\nnot ok /m.test(run.stdout);
     const killed = run.status !== 0 && failed;
     const failures = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1]);
-    report.push({ name: c.name, file: c.file, killed, failures });
+    const result = { name: c.name, file: c.file, killed, failures };
     console.log(`${killed ? "KILLED" : "SURVIVED"}: ${c.name}`);
-    if (!killed) console.log(run.stdout.slice(-1200), run.stderr);
+    if (!killed) throw new Error(`SURVIVED: ${c.name}\n${run.stdout.slice(-1200)}\n${run.stderr}`);
+    return result;
   } finally {
     writeFileSync(c.file, original);
-    compile(c.file);
+    writeFileSync(output, originalOutput);
   }
 }
-const mutantFile = "src/__wave_b_mutant.ts";
-for (const [name, source] of [
-  ["lint prototype literal", 'export function regression(key: string) { return ({ linux: "linux" })[key as "linux"]; }\n'],
-  ["lint JSON.parse assertion", 'interface SomeType { value: string }\nexport function regression(text: string) { return JSON.parse(text) as SomeType; }\n'],
-]) {
+
+function main() {
+  const report = cases.map(checkSourceMutation);
+  const mutantDir = mkdtempSync("src/mutation-");
+  const mutantFile = `${mutantDir}/lint.ts`;
   try {
-    writeFileSync(mutantFile, source);
-    const run = spawnSync("npm", ["run", "lint"], { encoding: "utf8" });
-    const killed = run.status !== 0 && /no-restricted-syntax|boundaries\/no-assert-any/.test(run.stdout);
-    report.push({ name, file: mutantFile, killed, failures: [run.stdout.match(/error\s+.+/g)?.join("; ") ?? run.stderr] });
-    console.log(`${killed ? "KILLED" : "SURVIVED"}: ${name}`);
-  } finally { unlinkSync(mutantFile); }
+    for (const [name, source, rule] of [
+      ["lint prototype literal", 'export function regression(key: string) { return ({ linux: "linux" })[key as "linux"]; }\n', "no-restricted-syntax"],
+      ["lint JSON.parse assertion", 'interface SomeType { value: string }\nexport function regression(text: string) { return JSON.parse(text) as SomeType; }\n', "boundaries/no-assert-any"],
+    ]) {
+      try {
+        writeFileSync(mutantFile, source);
+        const run = spawnSync("npm", ["run", "lint"], { encoding: "utf8" });
+        const killed = run.status !== 0 && run.stdout.includes(rule);
+        report.push({ name, killed });
+        console.log(`${killed ? "KILLED" : "SURVIVED"}: ${name}`);
+      } finally { rmSync(mutantFile, { force: true }); }
+    }
+  } finally { rmSync(mutantDir, { recursive: true, force: true }); }
+  console.log(`${report.filter((r) => r.killed).length}/${report.length} mutations killed`);
+  if (report.some((r) => !r.killed)) process.exitCode = 1;
 }
-writeFileSync("docs/boundary-audit-2026-09-mutations.md", "# Boundary audit mutation results\n\nEach source mutation was transpiled, its focused tests run, and the original source/output restored in a finally block. Both lint mutants ran `npm run lint`.\n\n| Mutation | Source | Result | Failing regression / rule |\n|---|---|---|---|\n" + report.map((r) => `| ${r.name} | ${r.file} | ${r.killed ? "killed" : "SURVIVED"} | ${r.failures.join("; ").replaceAll("|", "\\|")} |`).join("\n") + "\n");
-if (report.some((r) => !r.killed)) process.exitCode = 1;
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) main();

@@ -606,3 +606,91 @@ test("Boundary audit: attestation CLI does not spread an array as a record", asy
   assert.equal(result.code, EXIT_SUCCESS);
   assert.deepEqual(JSON.parse(result.stdout).data, []);
 });
+
+// CLI coverage: exercise every command with every global option against dist.
+for (const [command, method, data] of [
+  ["chat", "chatCompletions", { id: "gen_test", object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hello" } }] }],
+  ["models", "models", { data: [{ id: "trustedrouter/auto" }] }],
+  ["providers", "providers", { data: [{ slug: "openai" }] }],
+  ["regions", "regions", { data: [{ id: "us-central1" }] }],
+  ["trust", "trustRelease", { image_digest: "sha256:test" }],
+  ["attest", "attestation", { document: "header.payload.signature" }],
+]) {
+  test(`CLI coverage: ${command} global options and API failure`, async () => {
+    const operands = command === "chat" ? ["hello"] : [];
+    const result = await invoke([command, ...operands, "--json", "--retries", "0"], { env: API_KEY_ENV });
+    assert.equal(result.code, EXIT_SUCCESS);
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, command, data });
+    assert.equal(result.stderr, "");
+    assert.equal(result.clientOptions[0].maxRetries, 0);
+    for (const flag of ["--help", "-h"]) {
+      const help = await invoke([command, flag]);
+      assert.equal(help.code, EXIT_SUCCESS);
+      assert.match(help.stdout, new RegExp(`^Usage: trustedrouter ${command}`));
+      assert.equal(help.stderr, "");
+      assert.deepEqual(help.clientOptions, []);
+    }
+    for (const flag of ["--version", "-V"]) {
+      const version = await invoke([command, flag, "--json"]);
+      assert.equal(version.code, EXIT_SUCCESS);
+      assert.deepEqual(JSON.parse(version.stdout), { ok: true, command: "version", data: { version: "0.8.0" } });
+      assert.deepEqual(version.clientOptions, []);
+    }
+    const plain = await invoke([command, ...operands], { env: API_KEY_ENV });
+    assert.equal(plain.code, EXIT_SUCCESS);
+    assert.equal(plain.stdout, command === "chat" ? "hello\n" : command === "attest" ? data.document : `${JSON.stringify(data, null, 2)}\n`);
+    const failed = await invoke([command, ...operands, "--json"], {
+      env: API_KEY_ENV,
+      client: fakeClient({ async [method]() { throw new InternalError(503, "unavailable", {}); } }),
+    });
+    assert.equal(failed.code, EXIT_ERROR);
+    assert.equal(failed.stdout, "");
+    assert.deepEqual(JSON.parse(failed.stderr), { ok: false, error: { type: "internal_error", message: "unavailable", status_code: 503 } });
+  });
+}
+
+test("CLI coverage: chat model alias and plain streaming", async () => {
+  let request;
+  const result = await invoke(["chat", "hello", "-m", "trustedrouter/zdr", "--max-tokens", "1", "--stream"], {
+    env: API_KEY_ENV,
+    client: fakeClient({ async *chatCompletionsText(value) { request = value; yield "one"; yield "two"; } }),
+  });
+  assert.equal(result.code, EXIT_SUCCESS);
+  assert.equal(result.stdout, "onetwo\n");
+  assert.equal(result.stderr, "");
+  assert.deepEqual(request, { model: "trustedrouter/zdr", messages: [{ role: "user", content: "hello" }], max_tokens: 1 });
+});
+
+test("CLI coverage: invalid numeric options and unexpected operands", async () => {
+  for (const value of ["-1", "1.5", "no", "9007199254740992"]) {
+    const result = await invoke(["models", "--json", `--retries=${value}`]);
+    assert.equal(result.code, EXIT_USAGE);
+    assert.equal(JSON.parse(result.stderr).error.type, "usage_error");
+    assert.match(JSON.parse(result.stderr).error.message, /--retries must be an integer/);
+    assert.deepEqual(result.clientOptions, []);
+  }
+  for (const command of ["models", "providers", "regions", "trust", "attest"]) {
+    const result = await invoke([command, "extra", "--json"]);
+    assert.equal(result.code, EXIT_USAGE);
+    assert.deepEqual(JSON.parse(result.stderr), { ok: false, error: { type: "usage_error", message: `${command} does not accept positional arguments` } });
+    assert.deepEqual(result.clientOptions, []);
+  }
+});
+
+for (const mode of ["verify", "session"]) {
+  test(`CLI coverage: attest ${mode} verification failure`, async () => {
+    let destroyed = 0;
+    const result = await invoke(["attest", `--${mode}`, "--json"], {
+      dependencies: {
+        async policyFromTrustRelease() { return {}; },
+        async verifyGatewayAttestation() { throw new Error("verification failed"); },
+        async verifyGatewaySession() { return { socket: { destroy() { destroyed += 1; } } }; },
+        async fetchAttestationAgain() { throw new Error("verification failed"); },
+      },
+    });
+    assert.equal(result.code, EXIT_ERROR);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(JSON.parse(result.stderr), { ok: false, error: { type: "runtime_error", message: "verification failed" } });
+    assert.equal(destroyed, mode === "session" ? 1 : 0);
+  });
+}

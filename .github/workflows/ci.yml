@@ -20,6 +20,7 @@ jobs:
       - run: npm run lint
       - run: npm run check
       - run: npm test
+      - run: npm run test:mutations
       # attw runs with its esm-only profile: this package deliberately ships
       # only ESM behind an exports map, so legacy node10 resolution and
       # require()-from-CJS are expected non-goals, not defects.
