@@ -21,7 +21,7 @@ export { DEFAULT_TRUST_RELEASE_URL };
 export async function fetchTrustRelease({
   trustUrl = DEFAULT_TRUST_RELEASE_URL,
   fetchImpl = globalThis.fetch,
-} = {}) {
+}: { trustUrl?: string; fetchImpl?: typeof globalThis.fetch } = {}) {
   if (!fetchImpl) {
     throw new Error("A fetch implementation is required");
   }

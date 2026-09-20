@@ -16,11 +16,43 @@ import {
   recorderFor,
 } from "./telemetry.js";
 
-function protocolError(message, payload = null) {
+// JSON fields remain unknown until the existing codec checks narrow them.
+type JsonObject = Record<string, unknown>;
+interface FunctionCall extends JsonObject {
+  // Non-string argument deltas are copied as-is; a later string uses JS += coercion.
+  arguments: unknown;
+}
+export interface CollectedCompletion extends JsonObject {
+  id: unknown;
+  object: "chat.completion";
+  created: unknown;
+  model: unknown;
+  choices: Array<{ index: number; message: JsonObject; finish_reason: unknown }>;
+  usage?: object;
+  trustedrouter?: JsonObject;
+}
+interface ToolCall extends JsonObject {
+  index: number;
+  function: FunctionCall;
+}
+interface ChoiceState {
+  index: number;
+  role: string;
+  parts: Map<string, string[]>;
+  seenDeltaFields: Set<string>;
+  messageExtras: JsonObject;
+  choiceExtras: JsonObject;
+  toolCalls: Map<number, ToolCall>;
+  functionCall: FunctionCall;
+  sawFunctionCall: boolean;
+  finishReason: unknown;
+}
+
+function protocolError(message: string, payload: unknown = null) {
   return new InternalError(502, message, payload);
 }
 
-function sseData(line) {
+function sseData(line: string) {
   if (!line.startsWith("data:")) return null;
   return line.slice(5).trim();
 }
@@ -31,7 +63,7 @@ function sseData(line) {
  * observable (client telemetry contract v1 §6.1). A Response the engine did
  * not return (no recorder) decodes exactly as before.
  */
-async function* observeFirstEvent(response, events) {
+async function* observeFirstEvent<T>(response: Response, events: AsyncIterable<T>) {
   let first = true;
   beginRecorderStream(response);
   try {
@@ -47,19 +79,21 @@ async function* observeFirstEvent(response, events) {
   }
 }
 
-export function iterSseChunks(response) {
+export function iterSseChunks(response: Response) {
   return observeFirstEvent(response, decodeSseChunks(response));
 }
 
-export function iterSseEvents(response) {
+export function iterSseEvents(response: Response) {
   return observeFirstEvent(response, decodeSseEvents(response));
 }
 
-async function* decodeSseChunks(response) {
+// Node 20 response bodies are async iterable; the configured DOM library omits
+// that protocol. Keep the original null-body failure and byte views unchanged.
+async function* decodeSseChunks(response: Response) {
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
-  for await (const chunk of response.body) {
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array<ArrayBuffer>>) {
     buffer += decoder.decode(chunk, { stream: true });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || "";
@@ -94,12 +128,12 @@ async function* decodeSseChunks(response) {
   }
 }
 
-async function* decodeSseEvents(response) {
+async function* decodeSseEvents(response: Response) {
   const decoder = new TextDecoder();
   let buffer = "";
-  let frame = [];
+  let frame: string[] = [];
   let sawDone = false;
-  for await (const chunk of response.body) {
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array<ArrayBuffer>>) {
     buffer += decoder.decode(chunk, { stream: true });
     const lines = buffer.split(/\r?\n/);
     buffer = lines.pop() || "";
@@ -153,11 +187,11 @@ async function* decodeSseEvents(response) {
   }
 }
 
-export function parseSseLine(line) {
+export function parseSseLine(line: string): JsonObject | null {
   const data = sseData(line);
   if (data === null) return null;
   if (!data || data === "[DONE]") return null;
-  let payload;
+  let payload: unknown;
   try {
     payload = JSON.parse(data);
   } catch (error) {
@@ -171,13 +205,13 @@ export function parseSseLine(line) {
       payload,
     );
   }
-  if (typeof payload.error === "string" || (payload.error && typeof payload.error === "object")) {
+  if (typeof (payload as JsonObject).error === "string" || ((payload as JsonObject).error && typeof (payload as JsonObject).error === "object")) {
     throw protocolError("TrustedRouter SSE stream reported an error", payload);
   }
-  return payload;
+  return payload as JsonObject;
 }
 
-export function parseSseFrame(lines) {
+export function parseSseFrame(lines: string[]): JsonObject | unknown[] | null {
   if (!lines.length) return null;
   let event = null;
   const dataParts = [];
@@ -190,7 +224,7 @@ export function parseSseFrame(lines) {
   }
   const data = dataParts.join("\n").trim();
   if (!data || data === "[DONE]") return null;
-  let payload;
+  let payload: unknown;
   try {
     payload = JSON.parse(data);
   } catch (error) {
@@ -207,7 +241,7 @@ export function parseSseFrame(lines) {
     return { event, ...payload };
   }
   return payload && typeof payload === "object"
-    ? payload
+    ? payload as JsonObject | unknown[]
     : { event, data: payload };
 }
 
@@ -216,7 +250,7 @@ export function parseSseFrame(lines) {
  * chat.completion dict. Mirrors the Python `_collect_completion`
  * helper so the two SDKs produce identical aggregated output.
  */
-export function collectCompletion(chunks) {
+export function collectCompletion(chunks: Array<JsonObject | null | undefined>) {
   if (chunks.length === 0) {
     throw protocolError("TrustedRouter returned an empty completion stream");
   }
@@ -228,8 +262,8 @@ export function collectCompletion(chunks) {
   ]);
   let usage = null;
   const trustedrouter = collectTrustedRouterMetadata(chunks);
-  const envelope = {};
-  const choicesByIndex = new Map();
+  const envelope: JsonObject = {};
+  const choicesByIndex = new Map<number, ChoiceState>();
   for (const c of chunks) {
     for (const [key, value] of Object.entries(c ?? {})) {
       if (!["choices", "usage", "trustedrouter", "object"].includes(key)) {
@@ -239,9 +273,9 @@ export function collectCompletion(chunks) {
     if (c?.usage && typeof c.usage === "object") usage = c.usage;
     if (!Array.isArray(c?.choices)) continue;
     for (let ordinal = 0; ordinal < c.choices.length; ordinal += 1) {
-      const choice = c.choices[ordinal];
+      const choice = c.choices[ordinal] as JsonObject | null | undefined;
       if (!choice || typeof choice !== "object") continue;
-      const index = Number.isInteger(choice.index) ? choice.index : ordinal;
+      const index = Number.isInteger(choice.index) ? choice.index as number : ordinal;
       let state = choicesByIndex.get(index);
       if (!state) {
         state = {
@@ -267,7 +301,7 @@ export function collectCompletion(chunks) {
       if (!delta || typeof delta !== "object" || Array.isArray(delta)) {
         throw protocolError("TrustedRouter completion choice delta must be an object", choice);
       }
-      for (const [key, value] of Object.entries(delta)) {
+      for (const [key, value] of Object.entries(delta as JsonObject)) {
         state.seenDeltaFields.add(key);
         if (key === "role" && typeof value === "string") {
           state.role = value;
@@ -297,8 +331,8 @@ export function collectCompletion(chunks) {
   }
 
   const choices = [...choicesByIndex.keys()].sort((a, b) => a - b).map((index) => {
-    const state = choicesByIndex.get(index);
-    const message = { role: state.role, ...state.messageExtras };
+    const state = choicesByIndex.get(index)!;
+    const message: JsonObject = { role: state.role, ...state.messageExtras };
     for (const field of concatenatedFields) {
       const parts = state.parts.get(field);
       if (parts?.length) message[field] = parts.join("");
@@ -324,7 +358,7 @@ export function collectCompletion(chunks) {
     };
   });
 
-  const result = {
+  const result: CollectedCompletion = {
     ...envelope,
     id: envelope.id ?? "",
     object: "chat.completion",
@@ -337,10 +371,10 @@ export function collectCompletion(chunks) {
   return result;
 }
 
-function collectTrustedRouterMetadata(chunks) {
-  let trustedRouterDetails = {};
-  const synthEvents = [];
-  const synthDetails = {};
+function collectTrustedRouterMetadata(chunks: Array<JsonObject | null | undefined>) {
+  let trustedRouterDetails: JsonObject = {};
+  const synthEvents: JsonObject[] = [];
+  const synthDetails: JsonObject = {};
 
   for (const chunk of chunks) {
     const trusted = chunk?.trustedrouter;
@@ -351,13 +385,13 @@ function collectTrustedRouterMetadata(chunks) {
     // last-frame-wins rule used by the completion envelope itself.
     trustedRouterDetails = {
       ...trustedRouterDetails,
-      ...Object.fromEntries(Object.entries(trusted).filter(([key]) => key !== "synth")),
+      ...Object.fromEntries(Object.entries(trusted as JsonObject).filter(([key]) => key !== "synth")),
     };
 
-    const synth = trusted.synth;
+    const synth = (trusted as JsonObject).synth;
     if (!synth || typeof synth !== "object" || Array.isArray(synth)) continue;
 
-    const synthChunk = { ...synth };
+    const synthChunk: JsonObject = { ...synth };
     if (Object.hasOwn(synthChunk, "event")) synthEvents.push(synthChunk);
     else Object.assign(synthDetails, synthChunk);
   }
@@ -367,7 +401,7 @@ function collectTrustedRouterMetadata(chunks) {
     return Object.keys(trustedRouterDetails).length ? trustedRouterDetails : null;
   }
 
-  const synth = { ...synthDetails };
+  const synth: JsonObject = { ...synthDetails };
   if (synthEvents.length) synth.events = synthEvents;
 
   const panel = [];
@@ -393,21 +427,21 @@ function collectTrustedRouterMetadata(chunks) {
   return { ...trustedRouterDetails, synth };
 }
 
-function trustedRouterSynthEventDetail(event) {
+function trustedRouterSynthEventDetail(event: JsonObject) {
   const detail = event.detail;
   if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
-  const result = { ...detail };
+  const result: JsonObject = { ...detail };
   for (const key of ["stage", "index", "model"]) {
     if (Object.hasOwn(event, key) && !Object.hasOwn(result, key)) result[key] = event[key];
   }
   return result;
 }
 
-function mergeToolCallDeltas(toolCalls, value) {
+function mergeToolCallDeltas(toolCalls: Map<number, ToolCall>, value: unknown) {
   if (!Array.isArray(value)) return;
-  value.forEach((call, ordinal) => {
+  (value as unknown[]).forEach((call, ordinal) => {
     if (!call || typeof call !== "object") return;
-    const index = Number.isInteger(call.index) ? call.index : ordinal;
+    const index = Number.isInteger((call as JsonObject).index) ? (call as JsonObject).index as number : ordinal;
     let slot = toolCalls.get(index);
     if (!slot) {
       slot = {
@@ -417,23 +451,23 @@ function mergeToolCallDeltas(toolCalls, value) {
       };
       toolCalls.set(index, slot);
     }
-    for (const [key, item] of Object.entries(call)) {
+    for (const [key, item] of Object.entries(call as JsonObject)) {
       if (!["index", "function"].includes(key)) slot[key] = item;
     }
-    if (call.function && typeof call.function === "object") {
-      for (const [key, item] of Object.entries(call.function)) {
-        if (key === "arguments" && typeof item === "string") slot.function.arguments += item;
+    if ((call as JsonObject).function && typeof (call as JsonObject).function === "object") {
+      for (const [key, item] of Object.entries((call as JsonObject).function as JsonObject)) {
+        if (key === "arguments" && typeof item === "string") (slot.function.arguments as string) += item;
         else if (item !== null && item !== undefined) slot.function[key] = item;
       }
     }
   });
 }
 
-function mergeFunctionCallDelta(state, value) {
+function mergeFunctionCallDelta(state: ChoiceState, value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   state.sawFunctionCall = true;
-  for (const [key, item] of Object.entries(value)) {
-    if (key === "arguments" && typeof item === "string") state.functionCall.arguments += item;
+  for (const [key, item] of Object.entries(value as JsonObject)) {
+    if (key === "arguments" && typeof item === "string") (state.functionCall.arguments as string) += item;
     else if (item !== null && item !== undefined) state.functionCall[key] = item;
   }
 }

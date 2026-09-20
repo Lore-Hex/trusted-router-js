@@ -41,6 +41,63 @@ import {
 } from "./telemetry.js";
 import { DEFAULT_USER_AGENT } from "./transport.js";
 
+import type { TelemetryCounter, TelemetryEvent, TelemetrySink } from "./telemetry.js";
+
+type JsonObject = Record<string, unknown>;
+type CounterKey = [
+  "attempt" | "request", typeof TELEMETRY_ENDPOINTS[number], boolean,
+  typeof TELEMETRY_HOSTS[number], typeof TELEMETRY_FINAL_OUTCOMES[number],
+  typeof TELEMETRY_ERROR_CLASSES[number] | null,
+  typeof TELEMETRY_HTTP_STATUS_CLASSES[number], typeof TELEMETRY_TIMEOUT_PHASES[number],
+  boolean, boolean,
+];
+type Histogram = Partial<Record<typeof TELEMETRY_LATENCY_BUCKETS[number], number>>;
+type CounterCounts = Partial<TelemetryCounter[1]>;
+interface CounterEntry { key: CounterKey; counts: CounterCounts }
+interface CounterWindow {
+  windowStart: number;
+  rows: Map<string, CounterEntry>;
+  sizeBytes: number;
+}
+interface CounterRef { window: CounterWindow; id: string }
+interface WireAttempt {
+  index: number;
+  host: typeof TELEMETRY_HOSTS[number];
+  outcome: typeof TELEMETRY_OUTCOMES[number];
+  http_status: number | null;
+  error_class: typeof TELEMETRY_ERROR_CLASSES[number] | null;
+  error_source: typeof TELEMETRY_ERROR_SOURCES[number] | null;
+  retry_after_ms: number | null;
+  elapsed_ms: number;
+  ttfb_ms: number | null;
+  request_id: string | null;
+  moved: boolean;
+  should_retry?: boolean;
+}
+interface WireEvent extends Omit<TelemetryEvent, "attempts"> {
+  attempts: WireAttempt[];
+  sample_reason: typeof TELEMETRY_SAMPLE_REASONS[number];
+  sample_rate: number;
+  _completed_at?: number;
+  _estimated_bytes?: number;
+}
+interface ReporterOptions {
+  controlBaseUrl?: string | null;
+  apiKeyProvider?: (() => unknown) | null;
+  workspaceId?: string | null;
+  sdkIdentity?: unknown;
+  successSampleRate?: unknown;
+  flushMs?: unknown;
+  fetchImpl?: typeof globalThis.fetch | null;
+  clock?: (() => number) | null;
+  random?: (() => number) | null;
+  debug?: boolean;
+  retentionBytes?: number;
+  userAgent?: string;
+  environ?: Record<string, string | undefined>;
+}
+type DenoGlobal = typeof globalThis & { Deno?: { version?: { deno?: string } } };
+
 // §6.2 bounds. Pinned by test/telemetry-beacon.test.js.
 export const TELEMETRY_FLUSH_MS = 30_000;
 export const TELEMETRY_MAX_EVENTS = 1000;
@@ -76,22 +133,24 @@ const hasProcess = () => typeof process !== "undefined" && process !== null;
 // ---- SDK identity (§5.1 `sdk`) --------------------------------------------
 
 /** The process OS in the contract's closed vocabulary (py _os_enum). */
-export function osEnum(platform = hasProcess() ? process.platform : "") {
+export function osEnum(platform: unknown = hasProcess() ? process.platform : "") {
   const value = String(platform ?? "").trim().toLowerCase();
+  // The existing lookup also returns inherited properties (e.g. constructor).
+  // Keep those values unknown and preserve the behavior for a separate fix.
   return (
-    {
+    ({
       darwin: "macos",
       linux: "linux",
       win32: "windows",
       windows: "windows",
       freebsd: "freebsd",
       android: "android",
-    }[value] ?? "other"
+    } as Record<string, unknown>)[value] ?? "other"
   );
 }
 
 /** The process architecture in the contract's closed vocabulary (py _arch_enum). */
-export function archEnum(arch = hasProcess() ? process.arch : "") {
+export function archEnum(arch: unknown = hasProcess() ? process.arch : "") {
   const value = String(arch ?? "").trim().toLowerCase();
   if (value === "x64" || value === "x86_64" || value === "amd64") return "x64";
   if (["ia32", "x32", "i386", "i486", "i586", "i686", "x86"].includes(value)) return "x32";
@@ -102,11 +161,11 @@ export function archEnum(arch = hasProcess() ? process.arch : "") {
 }
 
 function runtimeToken() {
-  const versions = hasProcess() ? process.versions ?? {} : {};
+  const versions: Record<string, string | undefined> = hasProcess() ? process.versions ?? {} : {};
   let token;
   if (typeof versions.bun === "string") token = `bun/${versions.bun}`;
-  else if (typeof globalThis.Deno?.version?.deno === "string") {
-    token = `deno/${globalThis.Deno.version.deno}`;
+  else if (typeof (globalThis as DenoGlobal).Deno?.version?.deno === "string") {
+    token = `deno/${(globalThis as DenoGlobal).Deno!.version!.deno}`;
   } else if (typeof versions.node === "string") token = `node/${versions.node}`;
   else token = "other/0.0.0";
   return RUNTIME_RE.test(token) ? token : "node/0.0.0";
@@ -129,35 +188,35 @@ export function sdkIdentity() {
 }
 
 /** Every field back inside the closed vocabulary, falling back per field (py _normalise_sdk_identity). */
-export function normaliseSdkIdentity(identity) {
+export function normaliseSdkIdentity(identity: unknown) {
   const fallback = sdkIdentity();
-  const source = identity && typeof identity === "object" ? identity : {};
-  const name = SDK_NAMES.has(source.name) ? source.name : fallback.name;
+  const source: JsonObject = identity && typeof identity === "object" ? identity as JsonObject : {};
+  const name = (SDK_NAMES as ReadonlySet<unknown>).has(source.name) ? source.name as string : fallback.name;
   const version =
     typeof source.version === "string" &&
     source.version.length <= 32 &&
     SEMVER_RE.test(source.version)
       ? source.version
       : fallback.version;
-  const lang = SDK_LANGS.has(source.lang) ? source.lang : fallback.lang;
+  const lang = (SDK_LANGS as ReadonlySet<unknown>).has(source.lang) ? source.lang as string : fallback.lang;
   const runtime =
     typeof source.runtime === "string" && RUNTIME_RE.test(source.runtime)
       ? source.runtime
       : fallback.runtime;
-  const os = SDK_OSES.has(source.os) ? source.os : fallback.os;
-  const arch = SDK_ARCHES.has(source.arch) ? source.arch : fallback.arch;
+  const os = (SDK_OSES as ReadonlySet<unknown>).has(source.os) ? source.os as string : fallback.os;
+  const arch = (SDK_ARCHES as ReadonlySet<unknown>).has(source.arch) ? source.arch as string : fallback.arch;
   return { name, version, lang, runtime, os, arch };
 }
 
 // ---- wire shaping (§5.3 / §5.4): clamps, regexes, closed enums -------------
 
-function boundedInt(value, minimum, maximum) {
+function boundedInt(value: unknown, minimum: number, maximum: number) {
   const parsed = Math.trunc(Number(value));
   if (!Number.isFinite(parsed)) return minimum;
   return Math.min(maximum, Math.max(minimum, parsed));
 }
 
-function boundedOptionalInt(value, minimum, maximum) {
+function boundedOptionalInt(value: unknown, minimum: number, maximum: number) {
   if (value === null || value === undefined) return null;
   const parsed = Math.trunc(Number(value));
   if (!Number.isFinite(parsed)) return null;
@@ -165,7 +224,7 @@ function boundedOptionalInt(value, minimum, maximum) {
   return parsed;
 }
 
-function floatValue(value) {
+function floatValue(value: unknown) {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "boolean") return value ? 1 : 0;
   if (typeof value === "string" && value.trim() !== "") {
@@ -175,11 +234,11 @@ function floatValue(value) {
   return null;
 }
 
-function utf8Length(text) {
+function utf8Length(text: string) {
   return new TextEncoder().encode(text).length;
 }
 
-function randomHex(bytes) {
+function randomHex(bytes: number) {
   const buffer = new Uint8Array(bytes);
   if (globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(buffer);
@@ -196,28 +255,28 @@ function secureRandom() {
   if (globalThis.crypto?.getRandomValues) {
     const words = new Uint32Array(2);
     globalThis.crypto.getRandomValues(words);
-    return (words[0] * 2 ** 21 + (words[1] >>> 11)) / 2 ** 53;
+    return (words[0]! * 2 ** 21 + (words[1]! >>> 11)) / 2 ** 53;
   }
   return Math.random();
 }
 
-export function wireAttempt(attempt) {
-  const source = attempt && typeof attempt === "object" ? attempt : {};
-  const host = TELEMETRY_HOSTS.includes(source.host) ? source.host : "custom";
-  const outcome = TELEMETRY_OUTCOMES.includes(source.outcome)
-    ? source.outcome
+export function wireAttempt(attempt: unknown): WireAttempt {
+  const source: JsonObject = attempt && typeof attempt === "object" ? attempt as JsonObject : {};
+  const host = (TELEMETRY_HOSTS as readonly unknown[]).includes(source.host) ? source.host as typeof TELEMETRY_HOSTS[number] : "custom";
+  const outcome = (TELEMETRY_OUTCOMES as readonly unknown[]).includes(source.outcome)
+    ? source.outcome as typeof TELEMETRY_OUTCOMES[number]
     : "transport_error";
-  const errorClass = TELEMETRY_ERROR_CLASSES.includes(source.error_class)
-    ? source.error_class
+  const errorClass = (TELEMETRY_ERROR_CLASSES as readonly unknown[]).includes(source.error_class)
+    ? source.error_class as typeof TELEMETRY_ERROR_CLASSES[number]
     : null;
-  const errorSource = TELEMETRY_ERROR_SOURCES.includes(source.error_source)
-    ? source.error_source
+  const errorSource = (TELEMETRY_ERROR_SOURCES as readonly unknown[]).includes(source.error_source)
+    ? source.error_source as typeof TELEMETRY_ERROR_SOURCES[number]
     : null;
   const requestId =
     typeof source.request_id === "string" && REQUEST_ID_RE.test(source.request_id)
       ? source.request_id
       : null;
-  const wire = {
+  const wire: WireAttempt = {
     index: boundedInt(source.index, 0, 99),
     host,
     outcome,
@@ -245,36 +304,36 @@ export function wireAttempt(attempt) {
  * Only known keys survive: nothing a caller or a future field could smuggle
  * in reaches the wire.
  */
-export function wireEvent(event, now) {
-  const source = event && typeof event === "object" ? event : {};
+export function wireEvent(event: unknown, now: number): WireEvent | null {
+  const source: JsonObject = event && typeof event === "object" ? event as JsonObject : {};
   if (!Array.isArray(source.attempts)) return null;
-  const attempts = source.attempts
+  const attempts = (source.attempts as unknown[])
     .slice(0, MAX_ATTEMPTS_PER_EVENT)
     .filter((item) => item && typeof item === "object")
     .map(wireAttempt);
   if (attempts.length === 0) return null;
   const completedAt = Number(source._completed_at);
   const ageMs = Number.isFinite(completedAt) ? Math.trunc(now - completedAt) : 0;
-  const endpoint = TELEMETRY_ENDPOINTS.includes(source.endpoint)
-    ? source.endpoint
+  const endpoint = (TELEMETRY_ENDPOINTS as readonly unknown[]).includes(source.endpoint)
+    ? source.endpoint as typeof TELEMETRY_ENDPOINTS[number]
     : "inference_other";
-  if (!TELEMETRY_METHODS.includes(source.method)) return null;
+  if (!(TELEMETRY_METHODS as readonly unknown[]).includes(source.method)) return null;
   const model =
     typeof source.model === "string" && MODEL_RE.test(source.model) ? source.model : null;
-  const finalOutcome = TELEMETRY_FINAL_OUTCOMES.includes(source.final_outcome)
-    ? source.final_outcome
-    : attempts[attempts.length - 1].outcome;
-  const timeoutPhase = TELEMETRY_TIMEOUT_PHASES.includes(source.timeout_phase)
-    ? source.timeout_phase
+  const finalOutcome = (TELEMETRY_FINAL_OUTCOMES as readonly unknown[]).includes(source.final_outcome)
+    ? source.final_outcome as typeof TELEMETRY_FINAL_OUTCOMES[number]
+    : attempts[attempts.length - 1]!.outcome;
+  const timeoutPhase = (TELEMETRY_TIMEOUT_PHASES as readonly unknown[]).includes(source.timeout_phase)
+    ? source.timeout_phase as typeof TELEMETRY_TIMEOUT_PHASES[number]
     : "none";
-  if (!TELEMETRY_SAMPLE_REASONS.includes(source.sample_reason)) return null;
+  if (!(TELEMETRY_SAMPLE_REASONS as readonly unknown[]).includes(source.sample_reason)) return null;
   const sampleRate = floatValue(source.sample_rate);
   if (sampleRate === null || sampleRate <= 0 || sampleRate > 1) return null;
   return {
     age_ms: Math.min(MAX_AGE_MS, Math.max(0, Number.isFinite(ageMs) ? ageMs : 0)),
     plane: "inference",
     endpoint,
-    method: source.method,
+    method: source.method as typeof TELEMETRY_METHODS[number],
     streaming: Boolean(source.streaming),
     provider_pinned: Boolean(source.provider_pinned),
     model,
@@ -287,12 +346,12 @@ export function wireEvent(event, now) {
     timeout_phase: timeoutPhase,
     configured_timeout_ms: boundedOptionalInt(source.configured_timeout_ms, 1, MAX_DURATION_MS),
     sample_rate: sampleRate,
-    sample_reason: source.sample_reason,
+    sample_reason: source.sample_reason as typeof TELEMETRY_SAMPLE_REASONS[number],
   };
 }
 
 /** Coerce a 10-field counter key back into the closed vocabulary, or null (py _normalise_counter_key). */
-export function normaliseCounterKey(key) {
+export function normaliseCounterKey(key: unknown): CounterKey | null {
   if (!Array.isArray(key) || key.length !== 10) return null;
   let [
     level,
@@ -305,17 +364,18 @@ export function normaliseCounterKey(key) {
     timeoutPhase,
     floorMet,
     providerPinned,
-  ] = key;
+  ] = key as unknown[];
   if (level !== "attempt" && level !== "request") return null;
-  if (!TELEMETRY_ENDPOINTS.includes(endpoint)) endpoint = "inference_other";
-  if (!TELEMETRY_HOSTS.includes(host)) host = "custom";
-  if (!TELEMETRY_FINAL_OUTCOMES.includes(outcome)) return null;
-  if (errorClass !== null && errorClass !== undefined && !TELEMETRY_ERROR_CLASSES.includes(errorClass)) {
+  if (!(TELEMETRY_ENDPOINTS as readonly unknown[]).includes(endpoint)) endpoint = "inference_other";
+  if (!(TELEMETRY_HOSTS as readonly unknown[]).includes(host)) host = "custom";
+  if (!(TELEMETRY_FINAL_OUTCOMES as readonly unknown[]).includes(outcome)) return null;
+  if (errorClass !== null && errorClass !== undefined && !(TELEMETRY_ERROR_CLASSES as readonly unknown[]).includes(errorClass)) {
     errorClass = "unknown";
   }
   if (errorClass === undefined) errorClass = null;
-  if (!TELEMETRY_HTTP_STATUS_CLASSES.includes(httpStatusClass)) httpStatusClass = "none";
-  if (!TELEMETRY_TIMEOUT_PHASES.includes(timeoutPhase)) timeoutPhase = "none";
+  if (!(TELEMETRY_HTTP_STATUS_CLASSES as readonly unknown[]).includes(httpStatusClass)) httpStatusClass = "none";
+  if (!(TELEMETRY_TIMEOUT_PHASES as readonly unknown[]).includes(timeoutPhase)) timeoutPhase = "none";
+  // The checks above normalize every tuple field, including optional error class.
   return [
     level,
     endpoint,
@@ -327,30 +387,30 @@ export function normaliseCounterKey(key) {
     timeoutPhase,
     Boolean(floorMet),
     Boolean(providerPinned),
-  ];
+  ] as CounterKey;
 }
 
-function mergeHistogram(target, source) {
+function mergeHistogram(target: Histogram, source: unknown) {
   if (!source || typeof source !== "object") return;
-  for (const [bucket, count] of Object.entries(source)) {
-    if (!TELEMETRY_LATENCY_BUCKETS.includes(bucket)) continue;
-    target[bucket] = (target[bucket] ?? 0) + boundedInt(count, 0, MAX_COUNT);
+  for (const [bucket, count] of Object.entries(source as JsonObject)) {
+    if (!(TELEMETRY_LATENCY_BUCKETS as readonly unknown[]).includes(bucket)) continue;
+    target[bucket as keyof Histogram] = (target[bucket as keyof Histogram] ?? 0) + boundedInt(count, 0, MAX_COUNT);
   }
 }
 
-export function mergeCounterIncrement(target, increment) {
-  const source = increment && typeof increment === "object" ? increment : {};
-  for (const field of ["requests", "attempts", "failover_used", "first_attempt_success"]) {
+export function mergeCounterIncrement(target: CounterCounts, increment: unknown) {
+  const source: JsonObject = increment && typeof increment === "object" ? increment as JsonObject : {};
+  for (const field of ["requests", "attempts", "failover_used", "first_attempt_success"] as const) {
     target[field] = (target[field] ?? 0) + boundedInt(source[field] ?? 0, 0, MAX_COUNT);
   }
-  for (const field of ["total_ms_hist", "first_event_ms_hist"]) {
+  for (const field of ["total_ms_hist", "first_event_ms_hist"] as const) {
     if (!target[field]) target[field] = {};
     mergeHistogram(target[field], source[field] ?? {});
   }
 }
 
 /** The §5.4 ClientMinuteCounter row for one key and its merged counts. */
-export function counterRow(key, counts, windowAgeMs) {
+export function counterRow(key: CounterKey, counts: CounterCounts, windowAgeMs: number) {
   const source = counts && typeof counts === "object" ? counts : {};
   return {
     window_start_age_ms: Math.min(MAX_AGE_MS, Math.max(0, boundedInt(windowAgeMs, 0, MAX_AGE_MS))),
@@ -373,29 +433,29 @@ export function counterRow(key, counts, windowAgeMs) {
   };
 }
 
-const keyId = (key) => JSON.stringify(key);
+const keyId = (key: CounterKey) => JSON.stringify(key);
 
 /** py _folded_counter_key: error_class → unknown, optionally endpoint → inference_other. */
-function foldedKey(key, endpoint) {
-  const values = [...key];
+function foldedKey(key: CounterKey, endpoint: boolean) {
+  const values: CounterKey = [...key];
   values[5] = "unknown";
   if (endpoint) values[1] = "inference_other";
   return values;
 }
 
-function sampleRate(value) {
+function sampleRate(value: unknown) {
   const parsed = floatValue(value);
   if (parsed === null) return 0.01;
   return Math.min(1, Math.max(0, parsed));
 }
 
-function flushInterval(value) {
+function flushInterval(value: unknown) {
   const parsed = floatValue(value);
   if (parsed === null || parsed <= 0) return TELEMETRY_FLUSH_MS;
   return Math.min(TELEMETRY_BACKOFF_MAX_MS, parsed);
 }
 
-function writeStderr(line) {
+function writeStderr(line: string) {
   try {
     if (hasProcess() && process.stderr && typeof process.stderr.write === "function") {
       process.stderr.write(line);
@@ -412,10 +472,10 @@ function writeStderr(line) {
 }
 
 /** Resolve `promise` or give up after `ms`: an awaited close must keep this deadline alive. */
-function withDeadline(promise, ms) {
-  return new Promise((resolve) => {
-    let timer = null;
-    const settle = (value) => {
+function withDeadline(promise: Promise<boolean>, ms: number) {
+  return new Promise<boolean>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (value: boolean) => {
       if (timer !== null) clearTimeout(timer);
       resolve(value);
     };
@@ -426,21 +486,21 @@ function withDeadline(promise, ms) {
 
 // ---- process exit hook: ONE listener, installed lazily, removed when idle ----
 
-const LIVE_REPORTERS = new Set();
+const LIVE_REPORTERS = new Set<TelemetryReporter>();
 let exitHookInstalled = false;
 
 function onBeforeExit() {
   for (const reporter of [...LIVE_REPORTERS]) reporter._flushAtExit();
 }
 
-function registerLive(reporter) {
+function registerLive(reporter: TelemetryReporter) {
   LIVE_REPORTERS.add(reporter);
   if (exitHookInstalled || !hasProcess() || typeof process.on !== "function") return;
   exitHookInstalled = true;
   process.on("beforeExit", onBeforeExit);
 }
 
-function unregisterLive(reporter) {
+function unregisterLive(reporter: TelemetryReporter) {
   LIVE_REPORTERS.delete(reporter);
   if (LIVE_REPORTERS.size === 0 && exitHookInstalled) {
     exitHookInstalled = false;
@@ -449,7 +509,40 @@ function unregisterLive(reporter) {
 }
 
 /** Bounded, out-of-engine delivery sink for client reliability telemetry. */
-export class TelemetryReporter {
+export class TelemetryReporter implements TelemetrySink {
+  declare controlBaseUrl: string;
+  declare _apiKeyProvider: () => unknown;
+  declare workspaceId: string | null;
+  declare _sdkIdentity: ReturnType<typeof normaliseSdkIdentity>;
+  declare successSampleRate: number;
+  declare flushMs: number;
+  declare _fetch: typeof globalThis.fetch | null;
+  declare _clock: () => number;
+  declare _random: () => number;
+  declare debug: boolean;
+  declare _userAgent: string;
+  declare _retentionBytes: number;
+  declare _events: WireEvent[];
+  declare _eventsSizeBytes: number;
+  declare _currentWindowStart: number | null;
+  declare _currentCounters: Map<string, CounterEntry>;
+  declare _closedWindows: CounterWindow[];
+  declare _retainedWindowBytes: number;
+  declare _droppedSinceLast: number;
+  declare _instanceId: string;
+  declare _seq: number;
+  declare _backoffMs: number;
+  declare _backoffUntil: number;
+  declare _pausedUntil: number;
+  declare _nextFlushAt: number;
+  declare _urgentFlush: boolean;
+  declare _disabled: boolean;
+  declare _closed: boolean;
+  declare _workerStarted: boolean;
+  declare _timer: ReturnType<typeof setTimeout> | null;
+  declare _inflight: Promise<boolean> | null;
+  declare _exitAttempted: boolean;
+
   constructor({
     controlBaseUrl = DEFAULT_CONTROL_BASE_URL,
     apiKeyProvider = null,
@@ -464,7 +557,7 @@ export class TelemetryReporter {
     retentionBytes = TELEMETRY_RETENTION_BYTES,
     userAgent = DEFAULT_USER_AGENT,
     environ = hasProcess() && process.env ? process.env : {},
-  } = {}) {
+  }: ReporterOptions = {}) {
     this.controlBaseUrl = String(controlBaseUrl ?? DEFAULT_CONTROL_BASE_URL).replace(/\/+$/, "");
     this._apiKeyProvider = typeof apiKeyProvider === "function" ? apiKeyProvider : () => null;
     this.workspaceId = typeof workspaceId === "string" && workspaceId ? workspaceId : null;
@@ -504,7 +597,7 @@ export class TelemetryReporter {
 
   // ---- recording ---------------------------------------------------------
 
-  _sampleReason(event) {
+  _sampleReason(event: JsonObject): [typeof TELEMETRY_SAMPLE_REASONS[number], number] | null {
     if (event.final_outcome !== "ok") return ["failure", 1];
     const attempts = event.attempts;
     if ((Array.isArray(attempts) && attempts.length > 1) || Boolean(event.failover_used)) {
@@ -526,7 +619,7 @@ export class TelemetryReporter {
     this._droppedSinceLast += 1;
   }
 
-  _appendEvent(event) {
+  _appendEvent(event: WireEvent) {
     if (this._events.length >= TELEMETRY_MAX_EVENTS) this._dropBufferedEvent();
     let estimated;
     try {
@@ -539,11 +632,11 @@ export class TelemetryReporter {
     this._eventsSizeBytes += estimated;
   }
 
-  _minuteStart(now) {
+  _minuteStart(now: number) {
     return Math.floor(Math.max(0, now) / WINDOW_MS) * WINDOW_MS;
   }
 
-  _rollWindow(now) {
+  _rollWindow(now: number) {
     const minuteStart = this._minuteStart(now);
     if (this._currentWindowStart === null) {
       this._currentWindowStart = minuteStart;
@@ -555,15 +648,15 @@ export class TelemetryReporter {
     }
   }
 
-  _findCompatible(key, indices) {
+  _findCompatible(key: CounterKey, indices: number[]) {
     for (const [id, entry] of this._currentCounters) {
       if (indices.every((index) => entry.key[index] === key[index])) return id;
     }
     return null;
   }
 
-  _refold(id, endpoint) {
-    const entry = this._currentCounters.get(id);
+  _refold(id: string, endpoint: boolean) {
+    const entry = this._currentCounters.get(id)!;
     this._currentCounters.delete(id);
     const target = foldedKey(entry.key, endpoint);
     const merged = {};
@@ -579,7 +672,7 @@ export class TelemetryReporter {
    * last resort lands on an arbitrary existing key — so the counts stay
    * exact, only coarser. Folding never counts as a drop.
    */
-  _counterTarget(key) {
+  _counterTarget(key: CounterKey) {
     if (
       this._currentCounters.has(keyId(key)) ||
       this._currentCounters.size < TELEMETRY_MAX_WINDOW_KEYS
@@ -594,14 +687,14 @@ export class TelemetryReporter {
     if (this._currentCounters.has(keyId(endpointFolded))) return endpointFolded;
     const compatible = this._findCompatible(key, [0, 2, 3, 4, 6, 7, 8, 9]);
     if (compatible !== null) return this._refold(compatible, true);
-    return this._currentCounters.values().next().value.key;
+    return this._currentCounters.values().next().value!.key;
   }
 
-  _mergeCounters(counters) {
+  _mergeCounters(counters: unknown) {
     if (!Array.isArray(counters)) return;
-    for (const item of counters) {
-      const rawKey = Array.isArray(item) ? item[0] : undefined;
-      const increment = Array.isArray(item) ? item[1] : undefined;
+    for (const item of counters as unknown[]) {
+      const rawKey = Array.isArray(item) ? (item as unknown[])[0] : undefined;
+      const increment = Array.isArray(item) ? (item as unknown[])[1] : undefined;
       if (!Array.isArray(rawKey) || !increment || typeof increment !== "object") {
         this._droppedSinceLast += 1;
         continue;
@@ -623,10 +716,10 @@ export class TelemetryReporter {
   }
 
   /** The sink method the engine's RequestRecorder calls; never throws. */
-  onRequest(event, counters) {
+  onRequest(event: unknown, counters: unknown) {
     try {
       const now = Number(this._clock());
-      const source = event && typeof event === "object" ? event : {};
+      const source: JsonObject = event && typeof event === "object" ? event as JsonObject : {};
       const reason = this._sampleReason(source);
       let sampled = null;
       let invalidSample = false;
@@ -660,12 +753,12 @@ export class TelemetryReporter {
 
   // ---- windows -----------------------------------------------------------
 
-  _windowSize(window) {
+  _windowSize(window: CounterWindow) {
     const rows = [...window.rows.values()].map((entry) => counterRow(entry.key, entry.counts, 0));
     return utf8Length(JSON.stringify(rows));
   }
 
-  _closeCurrentWindow(now) {
+  _closeCurrentWindow(now: number) {
     if (this._currentCounters.size === 0 || this._currentWindowStart === null) return;
     const window = {
       windowStart: this._currentWindowStart,
@@ -680,21 +773,21 @@ export class TelemetryReporter {
     this._pruneWindows(now);
   }
 
-  _dropWindow(window) {
+  _dropWindow(window: CounterWindow) {
     this._retainedWindowBytes -= window.sizeBytes;
     this._droppedSinceLast += window.rows.size;
   }
 
   /** Retention: closed windows older than 24 h, then oldest-first past the byte cap. */
-  _pruneWindows(now) {
+  _pruneWindows(now: number) {
     while (
       this._closedWindows.length > 0 &&
-      now - this._closedWindows[0].windowStart > TELEMETRY_RETENTION_MS
+      now - this._closedWindows[0]!.windowStart > TELEMETRY_RETENTION_MS
     ) {
-      this._dropWindow(this._closedWindows.shift());
+      this._dropWindow(this._closedWindows.shift()!);
     }
     while (this._closedWindows.length > 0 && this._retainedWindowBytes > this._retentionBytes) {
-      this._dropWindow(this._closedWindows.shift());
+      this._dropWindow(this._closedWindows.shift()!);
     }
   }
 
@@ -715,13 +808,13 @@ export class TelemetryReporter {
    * take ≤100 events and ≤200 counters oldest-first, mint the batch, and
    * trim it — events first, then counters — until it fits in 65 536 bytes.
    */
-  _selectBatch(now) {
+  _selectBatch(now: number) {
     this._rollWindow(now);
     this._closeCurrentWindow(now);
     this._pruneWindows(now);
-    const eventRefs = [];
-    const wireEvents = [];
-    const invalid = [];
+    const eventRefs: WireEvent[] = [];
+    const wireEvents: WireEvent[] = [];
+    const invalid: WireEvent[] = [];
     for (const buffered of this._events) {
       const wire = wireEvent(buffered, now);
       if (wire === null) {
@@ -741,7 +834,7 @@ export class TelemetryReporter {
       );
       this._droppedSinceLast += invalid.length;
     }
-    const counterRefs = [];
+    const counterRefs: CounterRef[] = [];
     const wireCounters = [];
     outer: for (const window of this._closedWindows) {
       const ageMs = Math.trunc(now - window.windowStart);
@@ -780,14 +873,14 @@ export class TelemetryReporter {
     return { batch, eventRefs, counterRefs, dropped };
   }
 
-  _removeSelected(eventRefs, counterRefs) {
+  _removeSelected(eventRefs: WireEvent[], counterRefs: CounterRef[]) {
     const gone = new Set(eventRefs);
     this._events = this._events.filter((buffered) => !gone.has(buffered));
     this._eventsSizeBytes = this._events.reduce(
       (total, buffered) => total + boundedInt(buffered._estimated_bytes ?? 0, 0, Number.MAX_SAFE_INTEGER),
       0,
     );
-    const changed = new Set();
+    const changed = new Set<CounterWindow>();
     for (const { window, id } of counterRefs) {
       if (window.rows.delete(id)) changed.add(window);
     }
@@ -800,28 +893,28 @@ export class TelemetryReporter {
   }
 
   /** §4: apply a 202's `policy` ONLY when it reduces volume. */
-  _applyPolicy(payload, now) {
-    const policy = payload && typeof payload === "object" ? payload.policy : null;
+  _applyPolicy(payload: unknown, now: number) {
+    const policy = payload && typeof payload === "object" ? (payload as JsonObject).policy : null;
     if (!policy || typeof policy !== "object") return;
     if (Object.hasOwn(policy, "success_sample_rate")) {
-      const rate = floatValue(policy.success_sample_rate);
+      const rate = floatValue((policy as JsonObject).success_sample_rate);
       if (rate !== null && rate >= 0 && rate < this.successSampleRate) {
         this.successSampleRate = rate;
       }
     }
     if (Object.hasOwn(policy, "flush_seconds")) {
-      const seconds = floatValue(policy.flush_seconds);
+      const seconds = floatValue((policy as JsonObject).flush_seconds);
       if (seconds !== null && seconds * 1000 > this.flushMs) {
         this.flushMs = Math.min(TELEMETRY_BACKOFF_MAX_MS, seconds * 1000);
       }
     }
-    const pauseSeconds = floatValue(policy.pause_seconds);
+    const pauseSeconds = floatValue((policy as JsonObject).pause_seconds);
     if (pauseSeconds !== null && pauseSeconds >= 0 && pauseSeconds <= MAX_PAUSE_SECONDS) {
       this._pausedUntil = Math.max(this._pausedUntil, now + pauseSeconds * 1000);
     }
   }
 
-  _retryAfterSeconds(response) {
+  _retryAfterSeconds(response: Response) {
     let raw = null;
     try {
       raw = response?.headers?.get?.("retry-after") ?? null;
@@ -837,7 +930,7 @@ export class TelemetryReporter {
   }
 
   /** Exponential backoff 60 s → 10 min, floored by a Retry-After ≤ 600 s. */
-  _setBackoff(now, retryAfterSeconds = null) {
+  _setBackoff(now: number, retryAfterSeconds: number | null = null) {
     let delay = this._backoffMs;
     if (retryAfterSeconds !== null) delay = Math.max(delay, retryAfterSeconds * 1000);
     this._backoffUntil = now + Math.min(TELEMETRY_BACKOFF_MAX_MS, delay);
@@ -860,7 +953,9 @@ export class TelemetryReporter {
     this._stopWorker();
   }
 
-  async _handleResponse(response, { now, eventRefs, counterRefs, dropped }) {
+  async _handleResponse(response: Response, { now, eventRefs, counterRefs, dropped }: {
+    now: number; eventRefs: WireEvent[]; counterRefs: CounterRef[]; dropped: number;
+  }) {
     let killSwitch = null;
     try {
       killSwitch = response?.headers?.get?.("x-tr-telemetry") ?? null;
@@ -878,7 +973,7 @@ export class TelemetryReporter {
       this._droppedSinceLast = Math.max(0, this._droppedSinceLast - dropped);
       this._backoffMs = TELEMETRY_BACKOFF_MIN_MS;
       this._backoffUntil = 0;
-      let payload = null;
+      let payload: unknown = null;
       try {
         payload = await response.json();
       } catch {
@@ -901,7 +996,7 @@ export class TelemetryReporter {
     this._setBackoff(now, this._retryAfterSeconds(response));
   }
 
-  async _discardBody(response) {
+  async _discardBody(response: Response) {
     try {
       await response?.body?.cancel?.();
     } catch {
@@ -926,7 +1021,7 @@ export class TelemetryReporter {
       const { batch, eventRefs, counterRefs, dropped } = selected;
       const body = JSON.stringify(batch);
       if (this.debug) writeStderr(`trustedrouter telemetry batch: ${body}\n`);
-      const headers = {
+      const headers: Record<string, string> = {
         authorization: `Bearer ${apiKey}`,
         "user-agent": this._userAgent,
         "content-type": "application/json",
@@ -970,7 +1065,7 @@ export class TelemetryReporter {
 
   // ---- worker: an unref'd timer chain, lazily started on the first record ----
 
-  _startWorker(now) {
+  _startWorker(now: number) {
     if (this._workerStarted || this._disabled || this._closed) return;
     this._workerStarted = true;
     this._nextFlushAt = now + this.flushMs;
