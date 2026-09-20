@@ -9,6 +9,8 @@
  * module it is final — a broken open stream propagates, never reconnects.
  */
 
+import type { ChatCompletion, ChatCompletionChunk } from "../index.js";
+
 import { InternalError } from "./errors.js";
 import {
   beginRecorderStream,
@@ -250,7 +252,10 @@ export function parseSseFrame(lines: string[]): JsonObject | unknown[] | null {
  * chat.completion dict. Mirrors the Python `_collect_completion`
  * helper so the two SDKs produce identical aggregated output.
  */
-export function collectCompletion(chunks: Array<JsonObject | null | undefined>) {
+// Keep the shipped public contract while the implementation tracks unchecked
+// wire fields as unknown. This overload adds no runtime validation.
+export function collectCompletion(chunks: ChatCompletionChunk[]): ChatCompletion;
+export function collectCompletion(chunks: Array<JsonObject | null | undefined>): CollectedCompletion | ChatCompletion {
   if (chunks.length === 0) {
     throw protocolError("TrustedRouter returned an empty completion stream");
   }

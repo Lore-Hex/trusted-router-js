@@ -53,7 +53,43 @@ import {
 } from "./internal/transport.js";
 import { fetchTrustRelease } from "./internal/trust.js";
 
+import type {
+  TrustedRouterOptions, TrustedRouterFetch, RequestOptions,
+  ChatRequest, ChatCompletion, ChatCompletionChunk, FusionRequest,
+  ModelListOptions, EmbeddingsRequest, MessagesRequest, ResponsesRequest,
+  ResponseObject, ResponseInputTokens, BroadcastDestinationRequest,
+  BillingCheckoutRequest, OAuthAuthorizeUrlOptions, CreateOAuthAuthorizationOptions,
+  OAuthAuthorization, OAuthKeyExchangeRequest, OAuthKeyExchangeResponse, UserInfoResponse,
+} from "./index.js";
+import type { TransportRequestInit } from "./internal/transport.js";
+import type { TelemetrySink } from "./internal/telemetry.js";
+
+type ClientTelemetrySink = TelemetrySink & { close?: (options: { timeoutMs: number }) => void | Promise<void> };
+interface InternalClientOptions extends TrustedRouterOptions {
+  region?: unknown;
+  failoverRegions?: unknown;
+  _telemetrySink?: ClientTelemetrySink | null;
+}
+
 export class TrustedRouter {
+  declare apiKey: string | null;
+  declare baseUrl: string;
+  declare controlBaseUrl: string;
+  declare workspaceId: string | null;
+  declare fetch: TrustedRouterFetch;
+  declare defaultHeaders: Record<string, string>;
+  declare maxRetries: number;
+  declare regionalFailover: boolean;
+  declare baseUrls: string[];
+  declare regionProbeTimeout: number;
+  declare regionAffinityPending: boolean;
+  declare regionAffinityPromise: Promise<string[]> | null;
+  declare telemetryEnabled: boolean;
+  declare telemetrySampleRate: number;
+  declare private _telemetrySink: ClientTelemetrySink | null;
+  declare private _ownsTelemetryReporter: boolean;
+
+  constructor(options?: TrustedRouterOptions);
   constructor({
     apiKey = null,
     baseUrl = null,
@@ -70,7 +106,7 @@ export class TrustedRouter {
     telemetry = null,
     telemetrySampleRate = 0.01,
     _telemetrySink = null,
-  } = {}) {
+  }: InternalClientOptions = {}) {
     if (!fetchImpl) {
       throw new Error("A fetch implementation is required");
     }
@@ -145,7 +181,7 @@ export class TrustedRouter {
    * `beforeExit`; call this when the process ends via `process.exit()` or
    * when a client is discarded early.
    */
-  async close({ timeoutMs = 2_000 } = {}) {
+  async close({ timeoutMs = 2_000 }: { timeoutMs?: number } = {}): Promise<void> {
     const sink = this._telemetrySink;
     if (this._ownsTelemetryReporter && sink !== null && typeof sink.close === "function") {
       await sink.close({ timeoutMs });
@@ -154,8 +190,9 @@ export class TrustedRouter {
 
   // ---- core request loop ----------------------------------------------
 
-  async request(method, path, init = {}) {
-    return requestJson(this, method, path, init);
+  request(method: string, path: string, init?: RequestOptions): Promise<Record<string, unknown>>;
+  async request(method: string, path: string, init: TransportRequestInit = {}): Promise<Record<string, unknown>> {
+    return requestJson(this, method, path, init) as Promise<Record<string, unknown>>;
   }
 
   /**
@@ -163,11 +200,11 @@ export class TrustedRouter {
    * streaming chat methods so callers (or downstream relays) can read
    * the SSE bytes directly.
    */
-  async rawRequest(method, path, init = {}) {
+  async rawRequest(method: string, path: string, init: RequestOptions = {}): Promise<Response> {
     return requestStream(this, method, path, init);
   }
 
-  _controlRequest(method, path, init = {}) {
+  _controlRequest(method: string, path: string, init: TransportRequestInit = {}): Promise<Record<string, unknown>> {
     const requestInit = { ...init };
     if (
       requestInit._credentialFree !== true &&
@@ -179,11 +216,12 @@ export class TrustedRouter {
     return this.request(method, path, {
       ...requestInit,
       _baseUrls: [this.controlBaseUrl],
-    });
+    } as RequestOptions);
   }
 
   // ---- chat ------------------------------------------------------------
 
+  chatCompletions(options?: ChatRequest): Promise<ChatCompletion>;
   async chatCompletions({
     model = AUTO_MODEL,
     messages,
@@ -194,7 +232,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ChatRequest = {} as ChatRequest): Promise<ChatCompletion> {
     // The gateway always streams. Collect chunks into an OpenAI-shape
     // chat.completion dict so callers that asked for non-streaming
     // still get a single result back.
@@ -216,6 +254,7 @@ export class TrustedRouter {
   }
 
   /** Yield each parsed `chat.completion.chunk` as a plain object. */
+  chatCompletionsChunks(options?: ChatRequest): AsyncIterable<ChatCompletionChunk>;
   async *chatCompletionsChunks({
     model = AUTO_MODEL,
     messages,
@@ -226,7 +265,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ChatRequest = {} as ChatRequest) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
@@ -241,11 +280,11 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    yield* iterSseChunks(response);
+    yield* iterSseChunks(response) as AsyncIterable<ChatCompletionChunk>;
   }
 
   /** Yield only the text deltas — the simplest streaming consumer. */
-  async *chatCompletionsText(opts = {}) {
+  async *chatCompletionsText(opts: ChatRequest = {} as ChatRequest): AsyncIterable<string> {
     for await (const chunk of this.chatCompletionsChunks(opts)) {
       const text = chunk?.choices?.[0]?.delta?.content;
       if (typeof text === "string" && text.length > 0) {
@@ -255,6 +294,7 @@ export class TrustedRouter {
   }
 
   /** Pass-through SSE bytes — for HTTP relays that don't want to decode. */
+  chatCompletionsRawStream(options?: ChatRequest): AsyncIterable<Uint8Array>;
   async *chatCompletionsRawStream({
     model = AUTO_MODEL,
     messages,
@@ -265,7 +305,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ChatRequest = {} as ChatRequest) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
@@ -280,7 +320,7 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    for await (const chunk of response.body) {
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       yield chunk;
     }
   }
@@ -293,6 +333,7 @@ export class TrustedRouter {
    * an OpenAI-shape chat.completion, same as `chatCompletions`. Pass
    * `fallbackJudges` so a single squeamish judge can't sink a prompt.
    */
+  fusion(options?: FusionRequest): Promise<ChatCompletion>;
   async fusion({
     messages,
     analysisModels = null,
@@ -304,7 +345,7 @@ export class TrustedRouter {
     maxToolCalls = null,
     preset = null,
     ...params
-  } = {}) {
+  }: FusionRequest = {} as FusionRequest): Promise<ChatCompletion> {
     return this.chatCompletions({
       model: FUSION_MODEL,
       messages,
@@ -326,7 +367,7 @@ export class TrustedRouter {
 
   // ---- catalog / metadata ---------------------------------------------
 
-  models(options = {}) {
+  models(options: ModelListOptions = {}) {
     return this._controlRequest("GET", modelsPath(options));
   }
   providers() {
@@ -335,7 +376,7 @@ export class TrustedRouter {
   regions() {
     return this._controlRequest("GET", "/regions");
   }
-  credits({ workspaceId = null } = {}) {
+  credits({ workspaceId = null }: { workspaceId?: string | null } = {}) {
     return this._controlRequest("GET", "/credits", { workspaceId });
   }
 
@@ -355,8 +396,8 @@ export class TrustedRouter {
     workspaceId = null,
     timeout = null,
     signal = null,
-  }) {
-    const body = { model, input };
+  }: EmbeddingsRequest) {
+    const body: Record<string, unknown> = { model, input };
     if (encodingFormat !== null) body.encoding_format = encodingFormat;
     if (dimensions !== null) body.dimensions = dimensions;
     if (user !== null) body.user = user;
@@ -386,7 +427,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }) {
+  }: MessagesRequest) {
     return this.request("POST", "/messages", {
       body: { model, messages, max_tokens: maxTokens, ...params },
       apiKey,
@@ -398,6 +439,7 @@ export class TrustedRouter {
     });
   }
 
+  responses(options: ResponsesRequest): Promise<ResponseObject>;
   responses({
     model = AUTO_MODEL,
     input,
@@ -409,7 +451,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ResponsesRequest = {} as ResponsesRequest): Promise<ResponseObject> {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     return this.request("POST", "/responses", {
       body: responsesBody({
@@ -425,9 +467,10 @@ export class TrustedRouter {
       workspaceId,
       timeout,
       signal,
-    });
+    }) as unknown as Promise<ResponseObject>;
   }
 
+  responsesEvents(options: ResponsesRequest): AsyncIterable<Record<string, unknown>>;
   async *responsesEvents({
     model = AUTO_MODEL,
     input,
@@ -439,7 +482,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ResponsesRequest = {} as ResponsesRequest) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
@@ -454,9 +497,10 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    yield* iterSseEvents(response);
+    yield* iterSseEvents(response) as AsyncIterable<Record<string, unknown>>;
   }
 
+  responsesRawStream(options: ResponsesRequest): AsyncIterable<Uint8Array>;
   async *responsesRawStream({
     model = AUTO_MODEL,
     input,
@@ -468,7 +512,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ResponsesRequest = {} as ResponsesRequest) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
@@ -483,11 +527,12 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    for await (const chunk of response.body) {
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       yield chunk;
     }
   }
 
+  responsesInputTokens(options: ResponsesRequest): Promise<ResponseInputTokens>;
   responsesInputTokens({
     model = AUTO_MODEL,
     input,
@@ -496,7 +541,7 @@ export class TrustedRouter {
     idempotencyKey = null,
     signal = null,
     ...params
-  } = {}) {
+  }: ResponsesRequest = {} as ResponsesRequest): Promise<ResponseInputTokens> {
     return this.request("POST", "/responses/input_tokens", {
       body: responsesBody({
         model,
@@ -508,13 +553,14 @@ export class TrustedRouter {
       workspaceId,
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
       signal,
-    });
+    }) as unknown as Promise<ResponseInputTokens>;
   }
 
-  broadcastDestinations({ workspaceId = null } = {}) {
+  broadcastDestinations({ workspaceId = null }: { workspaceId?: string | null } = {}) {
     return this._controlRequest("GET", "/broadcast/destinations", { workspaceId });
   }
 
+  createBroadcastDestination(options: BroadcastDestinationRequest): Promise<Record<string, unknown>>;
   createBroadcastDestination({
     type,
     name = "Broadcast destination",
@@ -525,7 +571,7 @@ export class TrustedRouter {
     headers = null,
     apiKey = null,
     workspaceId = null,
-  } = {}) {
+  }: BroadcastDestinationRequest = {} as BroadcastDestinationRequest): Promise<Record<string, unknown>> {
     return this._controlRequest("POST", "/broadcast/destinations", {
       body: broadcastDestinationBody({
         type,
@@ -541,13 +587,13 @@ export class TrustedRouter {
     });
   }
 
-  getBroadcastDestination(id, { workspaceId = null } = {}) {
+  getBroadcastDestination(id: string, { workspaceId = null }: { workspaceId?: string | null } = {}) {
     return this._controlRequest("GET", `/broadcast/destinations/${id}`, {
       workspaceId,
     });
   }
 
-  updateBroadcastDestination(id, { workspaceId = null, ...patch } = {}) {
+  updateBroadcastDestination(id: string, { workspaceId = null, ...patch }: Record<string, unknown> & { workspaceId?: string | null } = {}) {
     return this._controlRequest("PATCH", `/broadcast/destinations/${id}`, {
       body: Object.fromEntries(
         Object.entries(patch).filter(([, value]) => value !== undefined),
@@ -556,30 +602,31 @@ export class TrustedRouter {
     });
   }
 
-  deleteBroadcastDestination(id, { workspaceId = null } = {}) {
+  deleteBroadcastDestination(id: string, { workspaceId = null }: { workspaceId?: string | null } = {}) {
     return this._controlRequest("DELETE", `/broadcast/destinations/${id}`, {
       workspaceId,
     });
   }
 
-  testBroadcastDestination(id, { workspaceId = null } = {}) {
+  testBroadcastDestination(id: string, { workspaceId = null }: { workspaceId?: string | null } = {}) {
     return this._controlRequest("POST", `/broadcast/destinations/${id}/test`, {
       workspaceId,
     });
   }
 
-  async status(url = DEFAULT_STATUS_URL) {
+  async status(url: string = DEFAULT_STATUS_URL): Promise<Record<string, unknown>> {
     return jsonOrThrow(
       await this.fetch(url, {
         headers: { "user-agent": DEFAULT_USER_AGENT },
         credentials: "omit",
         redirect: "manual",
       }),
-    );
+    ) as Promise<Record<string, unknown>>;
   }
 
   // ---- billing + auth -------------------------------------------------
 
+  billingCheckout(options: BillingCheckoutRequest): Promise<Record<string, unknown>>;
   billingCheckout({
     amount,
     paymentMethod = null,
@@ -587,8 +634,8 @@ export class TrustedRouter {
     successUrl = null,
     cancelUrl = null,
     idempotencyKey = null,
-  } = {}) {
-    const body = { amount };
+  }: BillingCheckoutRequest = {} as BillingCheckoutRequest): Promise<Record<string, unknown>> {
+    const body: Record<string, unknown> = { amount };
     if (paymentMethod !== null) body.payment_method = paymentMethod;
     if (workspaceId !== null) body.workspace_id = workspaceId;
     if (successUrl !== null) body.success_url = successUrl;
@@ -600,7 +647,8 @@ export class TrustedRouter {
     });
   }
 
-  stablecoinCheckout({ amount, ...params } = {}) {
+  stablecoinCheckout(req: Omit<BillingCheckoutRequest, "paymentMethod">): Promise<Record<string, unknown>>;
+  stablecoinCheckout({ amount, ...params }: Omit<BillingCheckoutRequest, "paymentMethod"> = {} as Omit<BillingCheckoutRequest, "paymentMethod">) {
     return this.billingCheckout({
       amount,
       paymentMethod: "stablecoin",
@@ -621,10 +669,11 @@ export class TrustedRouter {
    * Returns the parsed body, e.g. { data: { sub, email, email_verified,
    * wallet_address, workspace_id, created_at } }.
    */
-  userInfo() {
-    return this._controlRequest("GET", "/auth/userinfo");
+  userInfo(): Promise<UserInfoResponse> {
+    return this._controlRequest("GET", "/auth/userinfo") as unknown as Promise<UserInfoResponse>;
   }
 
+  oauthAuthorizeUrl(options: OAuthAuthorizeUrlOptions): string;
   oauthAuthorizeUrl({
     callbackUrl,
     codeChallenge = null,
@@ -636,7 +685,7 @@ export class TrustedRouter {
     spawnAgent = null,
     spawnCloud = null,
     state = null,
-  } = {}) {
+  }: OAuthAuthorizeUrlOptions = {} as OAuthAuthorizeUrlOptions): string {
     if (!callbackUrl) throw new Error("callbackUrl is required");
     if (codeChallengeMethod && !codeChallenge) {
       throw new Error("codeChallenge is required when codeChallengeMethod is set");
@@ -661,11 +710,12 @@ export class TrustedRouter {
     return authorizeUrl.toString();
   }
 
+  createOAuthAuthorization(options: CreateOAuthAuthorizationOptions): Promise<OAuthAuthorization>;
   async createOAuthAuthorization({
     codeVerifier = null,
     state = randomOAuthState(),
     ...options
-  } = {}) {
+  }: CreateOAuthAuthorizationOptions = {} as CreateOAuthAuthorizationOptions): Promise<OAuthAuthorization> {
     const pkce = await createOAuthPkcePair({ codeVerifier });
     return {
       ...pkce,
@@ -679,14 +729,15 @@ export class TrustedRouter {
     };
   }
 
+  exchangeOAuthKey(options: OAuthKeyExchangeRequest): Promise<OAuthKeyExchangeResponse>;
   exchangeOAuthKey({
     code,
     codeVerifier = null,
     codeChallengeMethod = null,
     timeout = null,
-  } = {}) {
+  }: OAuthKeyExchangeRequest = {} as OAuthKeyExchangeRequest): Promise<OAuthKeyExchangeResponse> {
     if (!code) throw new Error("code is required");
-    const body = { code };
+    const body: Record<string, unknown> = { code };
     if (codeVerifier) body.code_verifier = codeVerifier;
     if (codeChallengeMethod) body.code_challenge_method = codeChallengeMethod;
     return this._controlRequest("POST", "/auth/keys", {
@@ -695,10 +746,10 @@ export class TrustedRouter {
       _credentialFree: true,
       credentials: "omit",
       timeout,
-    });
+    }) as unknown as Promise<OAuthKeyExchangeResponse>;
   }
 
-  activity(params = {}) {
+  activity(params: Record<string, string | number | boolean | null | undefined> = {}) {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params)) {
       if (value !== undefined && value !== null) {
@@ -732,7 +783,7 @@ export class TrustedRouter {
     return new Uint8Array(await response.arrayBuffer());
   }
 
-  trustRelease(url = DEFAULT_TRUST_RELEASE_URL) {
+  trustRelease(url: string = DEFAULT_TRUST_RELEASE_URL) {
     return fetchTrustRelease({ trustUrl: url, fetchImpl: this.fetch });
   }
 }
