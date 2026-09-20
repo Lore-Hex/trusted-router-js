@@ -135,18 +135,16 @@ const hasProcess = () => typeof process !== "undefined" && process !== null;
 /** The process OS in the contract's closed vocabulary (py _os_enum). */
 export function osEnum(platform: unknown = hasProcess() ? process.platform : "") {
   const value = String(platform ?? "").trim().toLowerCase();
-  // The existing lookup also returns inherited properties (e.g. constructor).
-  // Keep those values unknown and preserve the behavior for a separate fix.
-  return (
-    ({
-      darwin: "macos",
-      linux: "linux",
-      win32: "windows",
-      windows: "windows",
-      freebsd: "freebsd",
-      android: "android",
-    } as Record<string, unknown>)[value] ?? "other"
-  );
+  // Match only explicit platforms; object prototype keys are not OS names.
+  switch (value) {
+    case "darwin": return "macos";
+    case "linux": return "linux";
+    case "win32":
+    case "windows": return "windows";
+    case "freebsd": return "freebsd";
+    case "android": return "android";
+    default: return "other";
+  }
 }
 
 /** The process architecture in the contract's closed vocabulary (py _arch_enum). */

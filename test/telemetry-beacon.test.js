@@ -10,7 +10,9 @@ import {
   TELEMETRY_MAX_EVENTS,
   TELEMETRY_MAX_WINDOW_KEYS,
   TelemetryReporter,
+  archEnum,
   normaliseSdkIdentity,
+  osEnum,
   sdkIdentity,
 } from "../dist/internal/beacon.js";
 import {
@@ -931,6 +933,52 @@ test("50 events or 60 KB trigger an urgent flush ahead of the interval", async (
   assert.equal(calls.length, 1, "flushed well before the 30 s interval");
   assert.equal(calls[0].body.events.length, 50);
 });
+
+test("osEnum preserves every mapped platform and case/whitespace normalisation", () => {
+  for (const [platform, expected] of [
+    ["darwin", "macos"],
+    ["linux", "linux"],
+    ["win32", "windows"],
+    ["windows", "windows"],
+    ["freebsd", "freebsd"],
+    ["android", "android"],
+  ]) {
+    assert.equal(osEnum(platform), expected, platform);
+    assert.equal(osEnum(` ${platform.toUpperCase()} `), expected, platform);
+  }
+});
+
+for (const value of ["constructor", "__proto__", "toString", "hasOwnProperty", "", "unmapped-7f39c2"]) {
+  test(`osEnum rejects unmapped platform ${JSON.stringify(value)}`, () => {
+    assert.equal(osEnum(value), "other");
+  });
+
+  test(`SDK sibling vocabularies reject ${JSON.stringify(value)}`, () => {
+    assert.equal(archEnum(value), "other");
+    const fallback = sdkIdentity();
+    const normalised = normaliseSdkIdentity({ os: value, arch: value, runtime: value });
+    assert.equal(normalised.os, fallback.os);
+    assert.equal(normalised.arch, fallback.arch);
+    assert.equal(normalised.runtime, fallback.runtime);
+  });
+
+  test(`beacon emits other for unmapped process.platform ${JSON.stringify(value)}`, async (t) => {
+    const make = reporterFactory(t);
+    const { calls, fetchImpl } = fakeBeacon();
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    let reporter;
+    try {
+      Object.defineProperty(process, "platform", { ...descriptor, value });
+      reporter = make({ sdkIdentity: null, apiKeyProvider: () => "sk-test", fetchImpl });
+    } finally {
+      Object.defineProperty(process, "platform", descriptor);
+    }
+    record(reporter, { final_outcome: "http_error" });
+    assert.equal(await reporter.flushNow(), true);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.sdk.os, "other");
+  });
+}
 
 test("sdkIdentity uses only the contract vocabulary and normalisation falls back per field", () => {
   const identity = sdkIdentity();
