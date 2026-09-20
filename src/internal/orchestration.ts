@@ -9,6 +9,15 @@
  * and must not change.
  */
 
+import type {
+  FusionToolOptions, FusionTool,
+  AdvisorToolOptions, AdvisorTool,
+  SelectorToolOptions, SelectorTool,
+  MapReduceToolOptions, MapReduceTool,
+  SubagentToolOptions, SubagentTool,
+  BroadcastDestinationRequest,
+} from "../index.js";
+
 import { ADVISOR_MODEL } from "./models.js";
 
 /**
@@ -29,8 +38,8 @@ export function fusionTool({
   preset = null,
   panelPrompt = null,
   synthesisPrompt = null,
-} = {}) {
-  const parameters = {};
+}: FusionToolOptions = {}): FusionTool {
+  const parameters: Record<string, unknown> = {};
   if (enabled !== null) parameters.enabled = enabled;
   if (preset !== null) parameters.preset = preset;
   if (analysisModels !== null) parameters.analysis_models = analysisModels;
@@ -61,8 +70,8 @@ export function advisorTool({
   workerTimeoutMs = null,
   advisorTimeoutMs = null,
   autoInitialAdvice = null,
-} = {}) {
-  const parameters = {};
+}: AdvisorToolOptions = {}): AdvisorTool {
+  const parameters: Record<string, unknown> = {};
   if (enabled !== null) parameters.enabled = enabled;
   if (depth !== null) parameters.depth = depth;
   if (workerModels !== null) parameters.worker_models = workerModels;
@@ -84,8 +93,8 @@ export function selectorTool({
   selectorModels = null,
   selectorPrompt = null,
   maxCompletionTokens = null,
-} = {}) {
-  const parameters = {};
+}: SelectorToolOptions = {}): SelectorTool {
+  const parameters: Record<string, unknown> = {};
   if (enabled !== null) parameters.enabled = enabled;
   if (analysisModels !== null) parameters.analysis_models = analysisModels;
   if (selectorModels !== null) parameters.selector_models = selectorModels;
@@ -105,8 +114,8 @@ export function mapReduceTool({
   parallelPrompt = null,
   reducerPrompt = null,
   maxCompletionTokens = null,
-} = {}) {
-  const parameters = {};
+}: MapReduceToolOptions = {}): MapReduceTool {
+  const parameters: Record<string, unknown> = {};
   if (enabled !== null) parameters.enabled = enabled;
   if (mapperModels !== null) parameters.mapper_models = mapperModels;
   if (parallelModels !== null) parameters.parallel_models = parallelModels;
@@ -131,8 +140,8 @@ export function subagentTool({
   temperature = null,
   reasoning = null,
   tools = null,
-} = {}) {
-  const parameters = {};
+}: SubagentToolOptions = {}): SubagentTool {
+  const parameters: Record<string, unknown> = {};
   if (enabled !== null) parameters.enabled = enabled;
   if (controllerModel !== null) parameters.controller_model = controllerModel;
   if (model !== null) parameters.model = model;
@@ -158,12 +167,16 @@ export const FUSION_PRIMITIVE_MODELS = Object.freeze(
   ]),
 );
 
-export function chatCompletionBody({ model, messages, params }) {
+export function chatCompletionBody({ model, messages, params }: {
+  model: string;
+  messages: Array<Record<string, unknown>>;
+  params: Record<string, unknown> & { tools?: Array<Record<string, unknown>> | null };
+}) {
   const bodyParams = { ...params };
   const tools = [...(bodyParams.tools ?? [])];
   delete bodyParams.tools;
 
-  const advisor = {};
+  const advisor: Record<string, unknown> = {};
   for (const [sdkKey, gatewayKey] of [
     ["depth", "depth"],
     ["workerModels", "worker_models"],
@@ -173,7 +186,7 @@ export function chatCompletionBody({ model, messages, params }) {
     ["workerTimeoutMs", "worker_timeout_ms"],
     ["advisorTimeoutMs", "advisor_timeout_ms"],
     ["autoInitialAdvice", "auto_initial_advice"],
-  ]) {
+  ] as const) {
     if (Object.hasOwn(bodyParams, sdkKey)) {
       if (bodyParams[sdkKey] !== null && bodyParams[sdkKey] !== undefined) {
         advisor[gatewayKey] = bodyParams[sdkKey];
@@ -185,7 +198,7 @@ export function chatCompletionBody({ model, messages, params }) {
     tools.push({ type: "trustedrouter:advisor", parameters: advisor });
   }
 
-  const fusion = {};
+  const fusion: Record<string, unknown> = {};
   for (const [sdkKey, gatewayKey] of [
     ["analysisModels", "analysis_models"],
     ["judgeModel", "model"],
@@ -210,7 +223,7 @@ export function chatCompletionBody({ model, messages, params }) {
     ["reducerModels", "reducer_models"],
     ["reducerModel", "reducer_model"],
     ["reducerPrompt", "reducer_prompt"],
-  ]) {
+  ] as const) {
     if (Object.hasOwn(bodyParams, sdkKey)) {
       if (bodyParams[sdkKey] !== null && bodyParams[sdkKey] !== undefined) {
         fusion[gatewayKey] = bodyParams[sdkKey];
@@ -223,7 +236,7 @@ export function chatCompletionBody({ model, messages, params }) {
   }
 
   const normalizedModel = String(model || "").trim().toLowerCase();
-  const out = { model, messages, stream: true, ...bodyParams };
+  const out: Record<string, unknown> = { model, messages, stream: true, ...bodyParams };
   if (
     tools.length > 0 ||
     ADVISOR_MODELS.has(normalizedModel) ||
@@ -234,8 +247,14 @@ export function chatCompletionBody({ model, messages, params }) {
   return out;
 }
 
-export function responsesBody({ model, input, instructions, stream, params }) {
-  const body = { model, input, ...params, stream };
+export function responsesBody({ model, input, instructions, stream, params }: {
+  model: string;
+  input: unknown;
+  instructions?: string | null;
+  stream: boolean;
+  params: Record<string, unknown>;
+}) {
+  const body: Record<string, unknown> = { model, input, ...params, stream };
   delete body.apiKey;
   delete body.extraHeaders;
   delete body.idempotencyKey;
@@ -256,8 +275,8 @@ export function broadcastDestinationBody({
   method,
   headers,
   apiKey,
-}) {
-  const body = {
+}: BroadcastDestinationRequest) {
+  const body: Record<string, unknown> = {
     type,
     name,
     enabled,
