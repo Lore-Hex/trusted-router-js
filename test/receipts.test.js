@@ -944,3 +944,98 @@ test("ReceiptCapture preserves exact async chunks, discovers, and verifies recei
     now: NOW,
   })).jti, "chatcmpl-test");
 });
+
+test("ReceiptCapture preserves extra flattened members and verified claims", async () => {
+  const { receipt, stream } = await streamReceipt();
+  const extended = { ...receipt, extension: { source: "capture-test" } };
+  const extendedStream = enc(new TextDecoder().decode(stream).replace(
+    JSON.stringify(receipt), JSON.stringify(extended),
+  ));
+  const capture = new ReceiptCapture([extendedStream]);
+  for await (const chunk of capture) assert.deepEqual(chunk, extendedStream);
+  assert.deepEqual(capture.receipt, extended);
+  const options = {
+    expectedIssuer: EXPECTED_ISSUER,
+    requestBody: enc("request"),
+    now: NOW,
+  };
+  assert.deepEqual(
+    await capture.verify(options),
+    await verifyReceipt(extended, { ...options, responseStream: extendedStream }),
+  );
+});
+
+for (const [name, malform] of [
+  ["missing signature", ({ protected: protectedValue, payload }) => ({
+    protected: protectedValue, payload,
+  })],
+  ["unprotected header", (receipt) => ({ ...receipt, header: {} })],
+]) {
+  for (const withEarlierReceipt of [false, true]) {
+    test(`ReceiptCapture ${withEarlierReceipt ? "well-formed then malformed" : "malformed last event"}: ${name}`, async () => {
+      const { receipt } = await streamReceipt();
+      const malformed = malform(receipt);
+      const options = {
+        expectedIssuer: EXPECTED_ISSUER,
+        requestBody: enc("request"),
+        now: NOW,
+      };
+      const events = [
+        ...(withEarlierReceipt ? [receiptEvent(receipt)] : []),
+        receiptEvent(malformed),
+        enc("data: [DONE]\n\n"),
+      ];
+      const stream = join(...events);
+      let expectedError;
+      await assert.rejects(
+        verifyReceipt(malformed, { ...options, responseStream: stream }),
+        (error) => {
+          assert.ok(error instanceof ReceiptStructureError);
+          expectedError = error;
+          return true;
+        },
+      );
+      // Exercise both a single refresh and state changes across chunk boundaries.
+      for (const chunks of [[stream], events]) {
+        const capture = new ReceiptCapture(chunks);
+        const consumed = [];
+        for await (const chunk of capture) consumed.push(chunk);
+        assert.deepEqual(join(...consumed), stream);
+        assert.deepEqual(capture.capturedBytes, stream);
+        assert.equal(capture.receipt, null);
+        await assert.rejects(capture.verify(options), (error) => {
+          assert.equal(error.constructor, ReceiptStructureError);
+          assert.equal(error.message, expectedError.message);
+          return true;
+        });
+        assert.equal(capture.receipt, null);
+      }
+    });
+  }
+
+  test(`ReceiptCapture malformed then well-formed: ${name}`, async () => {
+    const { receipt, stream } = await streamReceipt();
+    const events = [receiptEvent(malform(receipt)), stream];
+    const options = {
+      expectedIssuer: EXPECTED_ISSUER,
+      requestBody: enc("request"),
+      now: NOW,
+    };
+    for (const chunks of [[join(...events)], events]) {
+      const capture = new ReceiptCapture(chunks);
+      for await (const chunk of capture) assert.ok(chunk);
+      assert.deepEqual(capture.receipt, receipt);
+      assert.equal((await verifyReceipt(capture.receipt, {
+        ...options, responseStream: stream,
+      })).jti, "chatcmpl-test");
+      // The capture error is cleared; normal verification still rejects a stream
+      // containing multiple receipts (the first does not match the final JWS).
+      await assert.rejects(capture.verify(options), (error) => {
+        assert.equal(error.constructor, ReceiptHashError);
+        assert.equal(error.message,
+          "response stream receipt position check failed: embedded receipt does not match the verified flattened JWS");
+        return true;
+      });
+    }
+  });
+}

@@ -1227,6 +1227,7 @@ export class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
   declare private _chunks: Uint8Array[];
   declare private _length: number;
   declare private _receipt: FlattenedReceiptJws | null;
+  declare private _captureError: ReceiptStructureError | null;
 
   constructor(source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>) {
     const iterable: Partial<AsyncIterable<Uint8Array> & Iterable<Uint8Array>> = source;
@@ -1236,6 +1237,7 @@ export class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
     this._chunks = [];
     this._length = 0;
     this._receipt = null;
+    this._captureError = null;
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array> {
@@ -1281,9 +1283,22 @@ export class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
         const event = decodeSseEvent(raw);
         const embedded = embeddedReceipt(event.payload);
         if (embedded !== null) {
-          // Capture exposes the unvalidated object under the existing public contract.
-          // verifyReceipt validates the envelope before trusting any of its fields.
-          this._receipt = { ...embedded } as FlattenedReceiptJws;
+          // The last embedded receipt supplies either a validated envelope or a
+          // deferred structure error; iteration never exposes a malformed JWS.
+          try {
+            const envelope = parseEnvelope(embedded);
+            this._receipt = {
+              ...embedded,
+              protected: envelope.protected,
+              payload: envelope.payload,
+              signature: envelope.signature,
+            };
+            this._captureError = null;
+          } catch (error) {
+            if (!(error instanceof ReceiptStructureError)) throw error;
+            this._receipt = null;
+            this._captureError = error;
+          }
         }
       } catch (error) {
         if (!(error instanceof ReceiptVerificationError)) throw error;
@@ -1294,6 +1309,7 @@ export class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
   /** Supplies the response stream from captured bytes; the request is still required. */
   async verify(options: CaptureVerificationOptions): Promise<ReceiptClaims> {
     if (this._receipt === null) this._refreshReceipt();
+    if (this._captureError !== null) throw this._captureError;
     if (this._receipt === null) {
       throw new ReceiptStructureError(
         "receipt capture check failed: no flattened receipt event has been captured",
