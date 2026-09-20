@@ -28,7 +28,7 @@ import {
   mapReduceTool,
   selectorTool,
   subagentTool,
-} from "../src/index.js";
+} from "../dist/index.js";
 import {
   TELEMETRY_BACKOFF_MAX_MS,
   TELEMETRY_BACKOFF_MIN_MS,
@@ -40,8 +40,8 @@ import {
   TELEMETRY_MAX_WINDOW_KEYS,
   TELEMETRY_RETENTION_BYTES,
   TELEMETRY_RETENTION_MS,
-} from "../src/internal/beacon.js";
-import { DEFAULT_USER_AGENT } from "../src/internal/transport.js";
+} from "../dist/internal/beacon.js";
+import { DEFAULT_USER_AGENT } from "../dist/internal/transport.js";
 
 test("exports stable routing and orchestration aliases", () => {
   assert.equal(ZDR_MODEL, "trustedrouter/zdr");

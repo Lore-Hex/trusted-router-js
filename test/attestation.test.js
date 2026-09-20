@@ -15,7 +15,7 @@ import {
   GCP_ISSUER,
   policyFromTrustRelease,
   verifyGatewayAttestation,
-} from "../src/attestation.js";
+} from "../dist/attestation.js";
 
 // ---- helpers -----------------------------------------------------------
 

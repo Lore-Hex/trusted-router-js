@@ -27,7 +27,7 @@ import {
   policyFromTrustRelease,
   pinsImageIdentity,
   verifyGatewayAttestation,
-} from "../src/attestation.js";
+} from "../dist/attestation.js";
 
 const RUNS = Number(process.env.RUNS || 200);
 

@@ -20,14 +20,14 @@ import {
   ReceiptUpstreamError,
   UnsupportedAttestationError,
   verifyReceipt,
-} from "../src/receipts.js";
+} from "../dist/receipts.js";
 import {
   GCP_ISSUER,
   GCP_JWKS_URI,
   verifyGatewayAttestation,
   verifyReceiptKeyAttestation,
-} from "../src/attestation.js";
-import { receiptVerificationDependencies } from "../src/internal/receipt-dependencies.js";
+} from "../dist/attestation.js";
+import { receiptVerificationDependencies } from "../dist/internal/receipt-dependencies.js";
 
 if (!globalThis.crypto) {
   Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { TrustedRouter } from "../src/index.js";
+import { TrustedRouter } from "../dist/index.js";
 import {
   TELEMETRY_BACKOFF_MAX_MS,
   TELEMETRY_BACKOFF_MIN_MS,
@@ -12,14 +12,14 @@ import {
   TelemetryReporter,
   normaliseSdkIdentity,
   sdkIdentity,
-} from "../src/internal/beacon.js";
+} from "../dist/internal/beacon.js";
 import {
   DEFAULT_TELEMETRY_PATH,
   RecordingSink,
   TELEMETRY_ENDPOINTS,
   TELEMETRY_ERROR_CLASSES,
   TELEMETRY_SCHEMA_VERSION,
-} from "../src/internal/telemetry.js";
+} from "../dist/internal/telemetry.js";
 
 // The beacon channel (contract v1 §4/§5/§6.2). Reporter tests mirror
 // trusted-router-py's test_telemetry_reporter.py one for one, with an
@@ -1107,8 +1107,8 @@ function runExitScript(mode) {
         ...process.env,
         TRUSTEDROUTER_TELEMETRY: "1",
         JS_BEACON_MODE: mode,
-        JS_SDK_INDEX: new URL("../src/index.js", import.meta.url).href,
-        JS_SDK_BEACON: new URL("../src/internal/beacon.js", import.meta.url).href,
+        JS_SDK_INDEX: new URL("../dist/index.js", import.meta.url).href,
+        JS_SDK_BEACON: new URL("../dist/internal/beacon.js", import.meta.url).href,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

@@ -16,6 +16,7 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - run: npm run build
       - run: npm run check
       - run: npm test
       # attw runs with its esm-only profile: this package deliberately ships

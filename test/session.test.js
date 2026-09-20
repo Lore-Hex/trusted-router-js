@@ -6,12 +6,12 @@ import test from "node:test";
 import {
   fetchAttestationAgain,
   verifyGatewaySession,
-} from "../src/session.js";
+} from "../dist/session.js";
 import {
   EXPORTER_LABEL,
   EXPORTER_LENGTH,
   GCP_ISSUER,
-} from "../src/attestation.js";
+} from "../dist/attestation.js";
 
 const TEST_CERT = `-----BEGIN CERTIFICATE-----
 MIIDJTCCAg2gAwIBAgIUd0m8ZtJrberG6+Xs71DQPZzrTG4wDQYJKoZIhvcNAQEL

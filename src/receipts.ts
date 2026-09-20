@@ -8,6 +8,96 @@
 
 import { receiptVerificationDependencies } from "./internal/receipt-dependencies.js";
 
+export type ReceiptAttestationStatus = "verified" | "unverified_by_this_sdk";
+export type ReceiptRoute = "chat.completions" | "responses";
+export type ReceiptResponseDomain = "body" | "sse-data-v1" | "sse-events-v1";
+
+export interface FlattenedReceiptJws {
+  protected: string;
+  payload: string;
+  signature: string;
+  [key: string]: unknown;
+}
+
+export interface ReceiptHashClaims {
+  alg: "sha256";
+  hash: string;
+  of: ReceiptResponseDomain;
+  events: number | null;
+}
+
+export interface ReceiptModelClaims {
+  requested: string;
+  selected: string;
+  provider: string;
+  endpoint: string;
+}
+
+export interface ReceiptUpstreamClaims {
+  tier: "tee-verified" | "tls-webpki";
+  policy: string | null;
+  verifiedAt: number | null;
+  verificationExpiresAt: number | null;
+  certSha256: string | null;
+}
+
+export interface ReceiptClaims {
+  rv: 1;
+  iss: string;
+  iat: number;
+  jti: string;
+  gen: string | null;
+  nonce: string | null;
+  route: ReceiptRoute;
+  req: ReceiptHashClaims & { of: "body"; events: null };
+  resp: ReceiptHashClaims;
+  model: ReceiptModelClaims;
+  upstream: ReceiptUpstreamClaims;
+  attSha256: string | null;
+  attestationStatus: ReceiptAttestationStatus;
+  /** Alias of attestationStatus. */
+  attestation: ReceiptAttestationStatus;
+}
+
+interface ReceiptVerificationOptions {
+  /** HTTPS origin that must match the signed iss claim after origin normalization. */
+  expectedIssuer: string;
+  expectedNonce?: string | null;
+  maxAgeSeconds?: number | null;
+  now?: number | null;
+  /** Exact GCP CS JWT bytes pinned by att_sha256 or embedded in a flattened receipt. */
+  attestation?: ArrayBuffer | ArrayBufferView | null;
+  requireAttestation?: boolean;
+}
+
+type ReceiptBytes = ArrayBuffer | ArrayBufferView;
+
+/** Both traffic bindings are required unless inspection is explicitly requested. */
+export type VerifyReceiptOptions = ReceiptVerificationOptions & (
+  | ({ requireBindings?: true; requestBody: ReceiptBytes } & (
+      | { responseBody: ReceiptBytes; responseStream?: null }
+      | { responseStream: ReceiptBytes; responseBody?: null }
+    ))
+  | ({ requireBindings: false; requestBody?: ReceiptBytes | null } & (
+      | { responseBody?: ReceiptBytes | null; responseStream?: null }
+      | { responseStream?: ReceiptBytes | null; responseBody?: null }
+    ))
+);
+
+interface ReceiptEnvelope {
+  protected: string;
+  payload: string;
+  signature: string;
+  flattened: boolean;
+  flattenedValue: Record<string, unknown> | null;
+}
+
+type ReceiptErrorConstructor = new (message?: string, options?: ErrorOptions) => ReceiptVerificationError;
+type CaptureVerificationOptions = ReceiptVerificationOptions & { responseBody?: null; responseStream?: never } & (
+  | { requireBindings?: true; requestBody: ReceiptBytes }
+  | { requireBindings: false; requestBody?: ReceiptBytes | null }
+);
+
 const RECEIPT_TYPE = "inference-receipt+jws";
 const KEY_COMMITMENT_DOMAIN = new TextEncoder().encode(
   "inference-receipt-key-v1\u0000",
@@ -18,7 +108,7 @@ const encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 export class ReceiptVerificationError extends Error {
-  constructor(message, options) {
+  constructor(message?: string, options?: ErrorOptions) {
     super(message, options);
     this.name = new.target.name;
   }
@@ -38,20 +128,20 @@ export class ReceiptAttestationError extends ReceiptVerificationError {}
 export class MissingAttestationError extends ReceiptAttestationError {}
 export class UnsupportedAttestationError extends ReceiptAttestationError {}
 
-function isRecord(value) {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasOwn(value, key) {
+function hasOwn(value: object, key: PropertyKey) {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function repr(value) {
+function repr(value: unknown) {
   if (value === undefined) return "undefined";
   return JSON.stringify(value);
 }
 
-function asciiFromBytes(bytes, check) {
+function asciiFromBytes(bytes: Uint8Array, check: string) {
   for (const byte of bytes) {
     if (byte > 0x7f) {
       throw new ReceiptStructureError(`${check} check failed: receipt bytes must be ASCII`);
@@ -65,7 +155,7 @@ function asciiFromBytes(bytes, check) {
   return result;
 }
 
-function bytesFrom(value) {
+function bytesFrom(value: unknown): Uint8Array | null {
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) {
@@ -75,20 +165,20 @@ function bytesFrom(value) {
 }
 
 /** Validate JSON grammar and reject duplicate members at every object depth. */
-function scanJson(text) {
+function scanJson(text: string) {
   let offset = 0;
 
-  function fail(message = `unexpected token at position ${offset}`) {
+  function fail(message = `unexpected token at position ${offset}`): never {
     throw new SyntaxError(message);
   }
 
   function whitespace() {
-    while (/\s/.test(text[offset] ?? "") && /[\u0009\u000a\u000d\u0020]/.test(text[offset])) {
+    while (/\s/.test(text[offset] ?? "") && /[\u0009\u000a\u000d\u0020]/.test(text[offset]!)) {
       offset += 1;
     }
   }
 
-  function stringToken() {
+  function stringToken(): string {
     if (text[offset] !== '"') fail();
     const start = offset++;
     while (offset < text.length) {
@@ -100,7 +190,7 @@ function scanJson(text) {
       if (code === 0x5c) {
         offset += 1;
         if (offset >= text.length) fail("unterminated string");
-        const escaped = text[offset];
+        const escaped = text[offset]!;
         if ('"\\/bfnrt'.includes(escaped)) {
           offset += 1;
           continue;
@@ -117,7 +207,7 @@ function scanJson(text) {
     fail("unterminated string");
   }
 
-  function object() {
+  function object(): void {
     offset += 1;
     whitespace();
     const keys = new Set();
@@ -127,7 +217,7 @@ function scanJson(text) {
     }
     while (offset < text.length) {
       const token = stringToken();
-      const key = JSON.parse(token);
+      const key: unknown = JSON.parse(token);
       if (keys.has(key)) throw new SyntaxError(`duplicate JSON member ${repr(key)}`);
       keys.add(key);
       whitespace();
@@ -146,7 +236,7 @@ function scanJson(text) {
     fail("unterminated object");
   }
 
-  function array() {
+  function array(): void {
     offset += 1;
     whitespace();
     if (text[offset] === "]") {
@@ -167,7 +257,7 @@ function scanJson(text) {
     fail("unterminated array");
   }
 
-  function value() {
+  function value(): void {
     whitespace();
     const char = text[offset];
     if (char === "{") return object();
@@ -195,20 +285,20 @@ function scanJson(text) {
   if (offset !== text.length) fail(`unexpected token at position ${offset}`);
 }
 
-function loadJson(data, check) {
+function loadJson(data: string | Uint8Array, check: string): unknown {
   try {
     const text = typeof data === "string" ? data : utf8Decoder.decode(data);
     scanJson(text);
     return JSON.parse(text);
   } catch (error) {
     throw new ReceiptStructureError(
-      `${check} check failed: invalid JSON: ${error.message}`,
+      `${check} check failed: invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
 }
 
-function b64urlDecode(value, check, { allowEmpty = false } = {}) {
+function b64urlDecode(value: unknown, check: string, { allowEmpty = false }: { allowEmpty?: boolean } = {}) {
   if (
     typeof value !== "string" ||
     (!value && !allowEmpty) ||
@@ -233,23 +323,25 @@ function b64urlDecode(value, check, { allowEmpty = false } = {}) {
   }
 }
 
-function b64urlEncode(bytes) {
+function b64urlEncode(bytes: Uint8Array) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function sha256(bytes) {
+async function sha256(bytes: Uint8Array) {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle?.digest) {
     throw new ReceiptSignatureError(
       "WebCrypto check failed: globalThis.crypto.subtle is required (Node.js 20+)",
     );
   }
-  return new Uint8Array(await subtle.digest("SHA-256", bytes));
+  // WebCrypto enforces its own backing-buffer restrictions at runtime. Keep
+  // passing the original view so unsupported shared buffers still fail there.
+  return new Uint8Array(await subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
 }
 
-function equalBytes(left, right) {
+function equalBytes(left: Uint8Array, right: Uint8Array) {
   let difference = left.length ^ right.length;
   const length = Math.max(left.length, right.length);
   for (let index = 0; index < length; index += 1) {
@@ -258,11 +350,11 @@ function equalBytes(left, right) {
   return difference === 0;
 }
 
-function equalStrings(left, right) {
+function equalStrings(left: string, right: string) {
   return equalBytes(encoder.encode(String(left)), encoder.encode(String(right)));
 }
 
-function structuralEqual(left, right) {
+function structuralEqual(left: unknown, right: unknown): boolean {
   if (left === right) return true;
   if (Array.isArray(left) && Array.isArray(right)) {
     return left.length === right.length && left.every((value, i) => structuralEqual(value, right[i]));
@@ -276,7 +368,7 @@ function structuralEqual(left, right) {
   return false;
 }
 
-function parseEnvelope(receipt) {
+function parseEnvelope(receipt: unknown): ReceiptEnvelope {
   let flattenedValue = null;
   if (typeof receipt === "string" || bytesFrom(receipt) !== null) {
     let text;
@@ -308,7 +400,7 @@ function parseEnvelope(receipt) {
         );
       }
       return {
-        protected: parts[0], payload: parts[1], signature: parts[2],
+        protected: parts[0]!, payload: parts[1]!, signature: parts[2]!,
         flattened: false, flattenedValue: null,
       };
     }
@@ -325,19 +417,21 @@ function parseEnvelope(receipt) {
       "JWS structure check failed: unprotected flattened headers are not allowed",
     );
   }
-  const values = ["protected", "payload", "signature"].map((name) => flattenedValue[name]);
-  if (values.some((value) => typeof value !== "string" || !value)) {
+  const { protected: protectedValue, payload, signature } = flattenedValue;
+  if (typeof protectedValue !== "string" || !protectedValue ||
+      typeof payload !== "string" || !payload ||
+      typeof signature !== "string" || !signature) {
     throw new ReceiptStructureError(
       "JWS structure check failed: flattened JWS requires non-empty string protected, payload, and signature members",
     );
   }
   return {
-    protected: values[0], payload: values[1], signature: values[2],
+    protected: protectedValue, payload, signature,
     flattened: true, flattenedValue,
   };
 }
 
-async function parseHeader(envelope) {
+async function parseHeader(envelope: ReceiptEnvelope) {
   const raw = b64urlDecode(envelope.protected, "protected header");
   const header = loadJson(raw, "protected header");
   if (!isRecord(header)) {
@@ -369,7 +463,7 @@ async function parseHeader(envelope) {
   try {
     publicKey = b64urlDecode(jwk.x, "protected header jwk.x");
   } catch (error) {
-    throw new ReceiptHeaderError(error.message, { cause: error });
+    throw new ReceiptHeaderError((error instanceof Error ? error.message : String(error)), { cause: error });
   }
   if (publicKey.length !== 32) {
     throw new ReceiptHeaderError(
@@ -385,21 +479,21 @@ async function parseHeader(envelope) {
   return { header, publicKey };
 }
 
-function ed25519Unavailable(error) {
-  const message = String(error?.message ?? error).toLowerCase();
-  return error?.name === "NotSupportedError" ||
+function ed25519Unavailable(error: unknown) {
+  const message = String(isRecord(error) ? error.message ?? error : error).toLowerCase();
+  return (isRecord(error) && error.name === "NotSupportedError") ||
     message.includes("not supported") ||
     message.includes("unsupported") ||
     message.includes("unrecognized name");
 }
 
-async function verifySignature(envelope, publicKey) {
+async function verifySignature(envelope: ReceiptEnvelope, publicKey: Uint8Array<ArrayBuffer>) {
   const payload = b64urlDecode(envelope.payload, "JWS payload");
   let signature;
   try {
     signature = b64urlDecode(envelope.signature, "JWS signature");
   } catch (error) {
-    throw new ReceiptSignatureError(error.message, { cause: error });
+    throw new ReceiptSignatureError((error instanceof Error ? error.message : String(error)), { cause: error });
   }
   const subtle = globalThis.crypto?.subtle;
   if (!subtle?.importKey || !subtle?.verify) {
@@ -431,7 +525,7 @@ async function verifySignature(envelope, publicKey) {
   return payload;
 }
 
-function requiredMapping(claims, name, ErrorType = ReceiptClaimsError) {
+function requiredMapping(claims: Record<string, unknown>, name: string, ErrorType: ReceiptErrorConstructor = ReceiptClaimsError) {
   const value = claims[name];
   if (!isRecord(value)) {
     throw new ErrorType(`${name} claim check failed: required object is missing or invalid`);
@@ -439,7 +533,7 @@ function requiredMapping(claims, name, ErrorType = ReceiptClaimsError) {
   return value;
 }
 
-function requiredString(claims, name, family = "claims") {
+function requiredString(claims: Record<string, unknown>, name: string, family = "claims") {
   const value = claims[name];
   if (typeof value !== "string" || !value) {
     throw new ReceiptClaimsError(
@@ -449,7 +543,7 @@ function requiredString(claims, name, family = "claims") {
   return value;
 }
 
-function optionalString(claims, name, family = "claims") {
+function optionalString(claims: Record<string, unknown>, name: string, family = "claims") {
   if (!hasOwn(claims, name)) return null;
   const value = claims[name];
   if (typeof value !== "string" || !value) {
@@ -460,7 +554,7 @@ function optionalString(claims, name, family = "claims") {
   return value;
 }
 
-function canonicalHttpsOrigin(value, check) {
+function canonicalHttpsOrigin(value: unknown, check: string) {
   if (typeof value !== "string" || !value) {
     throw new ReceiptIssuerError(
       `${check} check failed: required HTTPS origin is missing`,
@@ -507,7 +601,7 @@ function requireTrafficBindings({
   responseBody,
   responseStream,
   requireBindings,
-}) {
+}: { requestBody: ReceiptBytes | null; responseBody: ReceiptBytes | null; responseStream: ReceiptBytes | null; requireBindings: boolean }) {
   if (requireBindings === false) return;
   const missingRequest = requestBody === null || requestBody === undefined;
   const missingResponse =
@@ -528,14 +622,16 @@ function requireTrafficBindings({
   }
 }
 
-function integer(value, check, ErrorType) {
-  if (!Number.isSafeInteger(value)) {
+function integer(value: unknown, check: string, ErrorType: ReceiptErrorConstructor): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
     throw new ErrorType(`${check} check failed: expected an integer`);
   }
   return value;
 }
 
-function digestClaim(record, name, response) {
+function digestClaim(record: Record<string, unknown>, name: string, response: false): ReceiptClaims["req"];
+function digestClaim(record: Record<string, unknown>, name: string, response: true): ReceiptHashClaims;
+function digestClaim(record: Record<string, unknown>, name: string, response: boolean): ReceiptHashClaims {
   if (record.alg !== "sha256") {
     throw new ReceiptHashError(
       `${name}.alg check failed: expected 'sha256', got ${repr(record.alg)}`,
@@ -548,22 +644,19 @@ function digestClaim(record, name, response) {
   try {
     digest = b64urlDecode(record.hash, `${name}.hash`);
   } catch (error) {
-    throw new ReceiptHashError(error.message, { cause: error });
+    throw new ReceiptHashError((error instanceof Error ? error.message : String(error)), { cause: error });
   }
   if (digest.length !== 32) {
     throw new ReceiptHashError(`${name}.hash check failed: SHA-256 digest must be 32 bytes`);
   }
-  const allowed = response
-    ? new Set(["body", "sse-data-v1", "sse-events-v1"])
-    : new Set(["body"]);
-  if (!allowed.has(record.of)) {
+  if (record.of !== "body" && !(response && (record.of === "sse-data-v1" || record.of === "sse-events-v1"))) {
     throw new ReceiptHashError(
       `${name}.of check failed: unsupported hash domain ${repr(record.of)}`,
     );
   }
-  let events = null;
+  let events: number | null = null;
   if (response && record.of !== "body") {
-    if (!Number.isSafeInteger(record.events) || record.events < 0) {
+    if (typeof record.events !== "number" || !Number.isSafeInteger(record.events) || record.events < 0) {
       throw new ReceiptHashError(
         `${name}.events check failed: streaming receipts require a non-negative integer`,
       );
@@ -575,13 +668,13 @@ function digestClaim(record, name, response) {
   return Object.freeze({ alg: record.alg, hash: record.hash, of: record.of, events });
 }
 
-function bodyBytes(value, check) {
+function bodyBytes(value: unknown, check: string) {
   const bytes = bytesFrom(value);
   if (!bytes) throw new ReceiptHashError(`${check} check failed: exact body bytes are required`);
   return bytes;
 }
 
-function findSequence(data, sequence, start) {
+function findSequence(data: Uint8Array, sequence: Uint8Array, start: number) {
   outer: for (let index = start; index <= data.length - sequence.length; index += 1) {
     for (let inner = 0; inner < sequence.length; inner += 1) {
       if (data[index + inner] !== sequence[inner]) continue outer;
@@ -594,7 +687,7 @@ function findSequence(data, sequence, start) {
 const LF_EVENT_END = new Uint8Array([0x0a, 0x0a]);
 const CRLF_EVENT_END = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]);
 
-function nextSseEvent(data, offset) {
+function nextSseEvent(data: Uint8Array, offset: number): [Uint8Array, number] | null {
   const lf = findSequence(data, LF_EVENT_END, offset);
   const crlf = findSequence(data, CRLF_EVENT_END, offset);
   if (lf < 0 && crlf < 0) return null;
@@ -602,11 +695,11 @@ function nextSseEvent(data, offset) {
   return [data.subarray(offset, end), end];
 }
 
-function startsWith(bytes, prefix) {
+function startsWith(bytes: Uint8Array, prefix: Uint8Array) {
   return bytes.length >= prefix.length && prefix.every((byte, i) => bytes[i] === byte);
 }
 
-function endsWith(bytes, suffix) {
+function endsWith(bytes: Uint8Array, suffix: Uint8Array) {
   const start = bytes.length - suffix.length;
   return start >= 0 && suffix.every((byte, i) => bytes[start + i] === byte);
 }
@@ -615,14 +708,14 @@ const DATA_PREFIX = encoder.encode("data:");
 const EVENT_PREFIX = encoder.encode("event:");
 const DONE = encoder.encode("[DONE]");
 
-function decodeSseEvent(raw) {
+function decodeSseEvent(raw: Uint8Array) {
   let body;
   if (endsWith(raw, CRLF_EVENT_END)) body = raw.subarray(0, raw.length - 4);
   else if (endsWith(raw, LF_EVENT_END)) body = raw.subarray(0, raw.length - 2);
   else throw new ReceiptHashError("response stream framing check failed: incomplete SSE event");
 
-  let name = new Uint8Array();
-  let payload = new Uint8Array();
+  let name: Uint8Array = new Uint8Array();
+  let payload: Uint8Array = new Uint8Array();
   let sawName = false;
   let sawData = false;
   let lineStart = 0;
@@ -663,7 +756,7 @@ function decodeSseEvent(raw) {
   return { name, payload, done: equalBytes(payload, DONE) };
 }
 
-function embeddedReceipt(payload) {
+function embeddedReceipt(payload: Uint8Array) {
   let decoded;
   try {
     decoded = loadJson(payload, "response stream event JSON");
@@ -680,7 +773,7 @@ function embeddedReceipt(payload) {
   return receipt;
 }
 
-function concatBytes(chunks, total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)) {
+function concatBytes(chunks: readonly Uint8Array[], total = chunks.reduce((sum, chunk) => sum + chunk.length, 0)) {
   const result = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -690,8 +783,8 @@ function concatBytes(chunks, total = chunks.reduce((sum, chunk) => sum + chunk.l
   return result;
 }
 
-async function streamDigest(stream, domain, expectedReceipt) {
-  const preimage = [];
+async function streamDigest(stream: Uint8Array, domain: ReceiptResponseDomain, expectedReceipt: Record<string, unknown> | null) {
+  const preimage: Uint8Array[] = [];
   let total = 0;
   let events = 0;
   let offset = 0;
@@ -767,7 +860,7 @@ async function streamDigest(stream, domain, expectedReceipt) {
   return { digest: await sha256(concatBytes(preimage, total)), events };
 }
 
-async function verifyGcpAttestation(attestation, commitment) {
+async function verifyGcpAttestation(attestation: Uint8Array, commitment: Uint8Array) {
   const policy = await receiptVerificationDependencies.policyFromTrustRelease();
   await receiptVerificationDependencies.verifyReceiptKeyAttestation(
     attestation,
@@ -780,7 +873,7 @@ async function verifyGcpAttestation(attestation, commitment) {
   );
 }
 
-function embeddedAttestationBytes(value) {
+function embeddedAttestationBytes(value: string) {
   for (let index = 0; index < value.length; index += 1) {
     if (value.charCodeAt(index) > 0x7f) {
       throw new ReceiptAttestationError(
@@ -792,11 +885,13 @@ function embeddedAttestationBytes(value) {
 }
 
 async function attestationStatus(
-  envelope,
-  header,
-  publicKey,
-  { attestation, attSha256, requireAttestation },
-) {
+  envelope: ReceiptEnvelope,
+  header: Record<string, unknown>,
+  publicKey: Uint8Array,
+  { attestation, attSha256, requireAttestation }: {
+    attestation: Uint8Array | null; attSha256: string | null; requireAttestation: boolean;
+  },
+): Promise<ReceiptAttestationStatus> {
   let document;
   if (!envelope.flattened) {
     if (attestation === null) {
@@ -853,7 +948,7 @@ async function attestationStatus(
     await verifyGcpAttestation(document, commitment);
   } catch (error) {
     if (error instanceof ReceiptVerificationError) throw error;
-    throw new ReceiptAttestationError(`GCP attestation check failed: ${error.message}`, {
+    throw new ReceiptAttestationError(`GCP attestation check failed: ${(error instanceof Error ? error.message : String(error))}`, {
       cause: error,
     });
   }
@@ -875,7 +970,7 @@ async function attestationStatus(
  * escape hatch when those bytes are unavailable. Flattened receipts always
  * verify their embedded evidence; a supplied `attestation` must match it.
  */
-export async function verifyReceipt(receipt, {
+export async function verifyReceipt(receipt: string | ArrayBuffer | ArrayBufferView | FlattenedReceiptJws, {
   expectedIssuer,
   requestBody = null,
   responseBody = null,
@@ -886,7 +981,7 @@ export async function verifyReceipt(receipt, {
   attestation = null,
   requireAttestation = true,
   requireBindings = true,
-}) {
+}: VerifyReceiptOptions): Promise<ReceiptClaims> {
   requireTrafficBindings({
     requestBody,
     responseBody,
@@ -1002,7 +1097,7 @@ export async function verifyReceipt(receipt, {
     try {
       attDigest = b64urlDecode(attSha256, "att_sha256 claim");
     } catch (error) {
-      throw new ReceiptClaimsError(error.message, { cause: error });
+      throw new ReceiptClaimsError((error instanceof Error ? error.message : String(error)), { cause: error });
     }
     if (attDigest.length !== 32) {
       throw new ReceiptClaimsError(
@@ -1113,7 +1208,8 @@ export async function verifyReceipt(receipt, {
     iat,
     jti,
     gen,
-    nonce: nonce ?? null,
+    // JSON members are own properties; a present nonce was validated above.
+    nonce: (nonce as string | undefined) ?? null,
     route,
     req,
     resp,
@@ -1126,21 +1222,27 @@ export async function verifyReceipt(receipt, {
 }
 
 /** Capture exact SSE wire chunks while exposing the embedded flattened JWS. */
-export class ReceiptCapture {
-  constructor(source) {
-    if (source?.[Symbol.asyncIterator]) this._source = source[Symbol.asyncIterator]();
-    else if (source?.[Symbol.iterator]) this._source = source[Symbol.iterator]();
+export class ReceiptCapture implements AsyncIterableIterator<Uint8Array> {
+  declare private _source: AsyncIterator<Uint8Array, unknown, unknown> | Iterator<Uint8Array, unknown, unknown>;
+  declare private _chunks: Uint8Array[];
+  declare private _length: number;
+  declare private _receipt: FlattenedReceiptJws | null;
+
+  constructor(source: AsyncIterable<Uint8Array> | Iterable<Uint8Array>) {
+    const iterable: Partial<AsyncIterable<Uint8Array> & Iterable<Uint8Array>> = source;
+    if (iterable?.[Symbol.asyncIterator]) this._source = iterable[Symbol.asyncIterator]!();
+    else if (iterable?.[Symbol.iterator]) this._source = iterable[Symbol.iterator]!();
     else throw new TypeError("ReceiptCapture source must be an async iterable of raw bytes");
     this._chunks = [];
     this._length = 0;
     this._receipt = null;
   }
 
-  [Symbol.asyncIterator]() {
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array> {
     return this;
   }
 
-  async next() {
+  async next(): Promise<IteratorResult<Uint8Array>> {
     const result = await this._source.next();
     if (result.done) return { done: true, value: undefined };
     const chunk = result.value;
@@ -1154,20 +1256,20 @@ export class ReceiptCapture {
     return { done: false, value: chunk };
   }
 
-  async return(value) {
+  async return(value?: unknown): Promise<IteratorResult<Uint8Array>> {
     if (typeof this._source.return === "function") await this._source.return(value);
     return { done: true, value };
   }
 
-  get receipt() {
+  get receipt(): FlattenedReceiptJws | null {
     return this._receipt;
   }
 
-  get capturedBytes() {
+  get capturedBytes(): Uint8Array {
     return concatBytes(this._chunks, this._length);
   }
 
-  _refreshReceipt() {
+  private _refreshReceipt() {
     const data = this.capturedBytes;
     let offset = 0;
     while (offset < data.length) {
@@ -1178,14 +1280,19 @@ export class ReceiptCapture {
       try {
         const event = decodeSseEvent(raw);
         const embedded = embeddedReceipt(event.payload);
-        if (embedded !== null) this._receipt = { ...embedded };
+        if (embedded !== null) {
+          // Capture exposes the unvalidated object under the existing public contract.
+          // verifyReceipt validates the envelope before trusting any of its fields.
+          this._receipt = { ...embedded } as FlattenedReceiptJws;
+        }
       } catch (error) {
         if (!(error instanceof ReceiptVerificationError)) throw error;
       }
     }
   }
 
-  async verify(options) {
+  /** Supplies the response stream from captured bytes; the request is still required. */
+  async verify(options: CaptureVerificationOptions): Promise<ReceiptClaims> {
     if (this._receipt === null) this._refreshReceipt();
     if (this._receipt === null) {
       throw new ReceiptStructureError(

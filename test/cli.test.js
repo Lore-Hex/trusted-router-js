@@ -7,12 +7,12 @@ import {
   EXIT_SUCCESS,
   EXIT_USAGE,
   runCli,
-} from "../src/cli/main.js";
+} from "../dist/cli/main.js";
 import {
   AuthenticationError,
   InternalError,
   PermissionDeniedError,
-} from "../src/index.js";
+} from "../dist/index.js";
 
 const API_KEY_ENV = { TRUSTEDROUTER_API_KEY: "sk-tr-test" };
 
