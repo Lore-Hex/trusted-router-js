@@ -17,6 +17,55 @@ import {
   verifyGatewaySession,
 } from "../session.js";
 
+import type { ChatCompletion, ChatRequest, TrustedRouterOptions } from "../index.js";
+
+interface CliInput extends AsyncIterable<string | Uint8Array> {
+  isTTY?: boolean;
+}
+
+interface CliOutput {
+  write(chunk: string): unknown;
+}
+
+type CliClient = Pick<TrustedRouter,
+  "apiKey" | "baseUrl" | "fetch" | "chatCompletions" | "chatCompletionsText" |
+  "models" | "providers" | "regions" | "trustRelease" | "attestation"
+> & { close?: () => void | Promise<void> };
+
+interface CliDependencies {
+  clientFactory: (options: TrustedRouterOptions) => CliClient;
+  fetchAttestationAgain: typeof fetchAttestationAgain;
+  policyFromTrustRelease: typeof policyFromTrustRelease;
+  verifyGatewayAttestation: typeof verifyGatewayAttestation;
+  verifyGatewaySession: typeof verifyGatewaySession;
+}
+
+interface CliOptions {
+  stdin?: CliInput;
+  stdout?: CliOutput;
+  stderr?: CliOutput;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal | null;
+  dependencies?: Partial<CliDependencies>;
+}
+
+interface CommandContext {
+  dependencies: CliDependencies;
+  env: NodeJS.ProcessEnv;
+  stdin: CliInput;
+  stdout: CliOutput;
+  signal: AbortSignal | null;
+}
+
+type ParsedCliArgs = ReturnType<typeof parseCliArgs>;
+type CliValues = ParsedCliArgs["values"];
+type CliError = Error & {
+  statusCode?: unknown;
+  status_code?: unknown;
+  requestId?: unknown;
+  request_id?: unknown;
+};
+
 export const EXIT_SUCCESS = 0;
 export const EXIT_ERROR = 1;
 export const EXIT_USAGE = 2;
@@ -24,12 +73,12 @@ export const EXIT_AUTH = 3;
 
 const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 const GLOBAL_OPTIONS = new Set(["help", "json", "retries", "version"]);
-const COMMAND_OPTIONS = Object.freeze({
+const COMMAND_OPTIONS: Readonly<Record<string, ReadonlySet<string> | undefined>> = Object.freeze({
   chat: new Set(["max-tokens", "model", "stream"]),
-  models: new Set(),
-  providers: new Set(),
-  regions: new Set(),
-  trust: new Set(),
+  models: new Set<string>(),
+  providers: new Set<string>(),
+  regions: new Set<string>(),
+  trust: new Set<string>(),
   attest: new Set(["connect-ip", "session", "verify"]),
 });
 
@@ -61,7 +110,7 @@ Exit codes:
   error; 3 authentication or permission failure.
 `;
 
-const COMMAND_HELP = Object.freeze({
+const COMMAND_HELP: Readonly<Record<string, string | undefined>> = Object.freeze({
   chat: `Usage: trustedrouter chat [PROMPT|-] [options]
 
 Runs one chat completion. With no PROMPT, piped stdin is read. Use '-' to read
@@ -94,7 +143,9 @@ Options:
 });
 
 class CliUsageError extends Error {
-  constructor(message, type = "usage_error") {
+  declare type: string;
+
+  constructor(message: string, type = "usage_error") {
     super(message);
     this.name = "CliUsageError";
     this.type = type;
@@ -102,14 +153,16 @@ class CliUsageError extends Error {
 }
 
 class CliAuthenticationError extends Error {
-  constructor(message) {
+  declare type: string;
+
+  constructor(message: string) {
     super(message);
     this.name = "CliAuthenticationError";
     this.type = "authentication_error";
   }
 }
 
-function parseCliArgs(argv) {
+function parseCliArgs(argv: string[]) {
   let parsed;
   try {
     parsed = parseArgs({
@@ -130,7 +183,8 @@ function parseCliArgs(argv) {
       },
     });
   } catch (error) {
-    throw new CliUsageError(error.message);
+    // node:util parseArgs throws Error instances; retain the original message access.
+    throw new CliUsageError((error as Error).message);
   }
 
   const { values, positionals } = parsed;
@@ -140,7 +194,7 @@ function parseCliArgs(argv) {
   return { command, operands, retries, values };
 }
 
-function integerOption(value, label, { min = Number.MIN_SAFE_INTEGER } = {}) {
+function integerOption(value: string, label: string, { min = Number.MIN_SAFE_INTEGER }: { min?: number } = {}) {
   if (!/^-?\d+$/.test(String(value))) {
     throw new CliUsageError(`${label} must be an integer`);
   }
@@ -151,7 +205,7 @@ function integerOption(value, label, { min = Number.MIN_SAFE_INTEGER } = {}) {
   return parsed;
 }
 
-function validateCommandOptions(command, values) {
+function validateCommandOptions(command: string, values: CliValues) {
   const allowed = COMMAND_OPTIONS[command];
   if (!allowed) throw new CliUsageError(`unknown command: ${command}`);
   for (const name of Object.keys(values)) {
@@ -167,11 +221,11 @@ function validateCommandOptions(command, values) {
   }
 }
 
-function apiKeyFromEnvironment(env) {
+function apiKeyFromEnvironment(env: NodeJS.ProcessEnv) {
   return env.TRUSTEDROUTER_API_KEY || env.TR_API_KEY || null;
 }
 
-function clientOptions(parsed, env) {
+function clientOptions(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): TrustedRouterOptions {
   return {
     apiKey: apiKeyFromEnvironment(env),
     maxRetries: parsed.retries,
@@ -181,42 +235,42 @@ function clientOptions(parsed, env) {
   };
 }
 
-function write(stream, value) {
+function write(stream: CliOutput, value: unknown) {
   stream.write(String(value));
 }
 
-function writeLine(stream, value = "") {
+function writeLine(stream: CliOutput, value: unknown = "") {
   write(stream, `${value}\n`);
 }
 
-function stableJsonValue(value, ancestors = new Set()) {
+function stableJsonValue(value: unknown, ancestors = new Set<object>()): unknown {
   if (value === null || typeof value !== "object") return value;
-  if (typeof value.toJSON === "function") {
-    return stableJsonValue(value.toJSON(), ancestors);
+  if (typeof (value as Record<string, unknown>).toJSON === "function") {
+    return stableJsonValue((value as { toJSON(): unknown }).toJSON(), ancestors);
   }
   if (ancestors.has(value)) {
     throw new TypeError("cannot serialize a circular value");
   }
 
   ancestors.add(value);
-  let normalized;
+  let normalized: unknown[] | Record<string, unknown>;
   if (Array.isArray(value)) {
-    normalized = value.map((item) => stableJsonValue(item, ancestors));
+    normalized = value.map((item: unknown) => stableJsonValue(item, ancestors));
   } else {
-    normalized = Object.create(null);
+    normalized = Object.create(null) as Record<string, unknown>;
     for (const key of Object.keys(value).sort()) {
-      normalized[key] = stableJsonValue(value[key], ancestors);
+      normalized[key] = stableJsonValue((value as Record<string, unknown>)[key], ancestors);
     }
   }
   ancestors.delete(value);
   return normalized;
 }
 
-function stableJson(value, space) {
+function stableJson(value: unknown, space?: number) {
   return JSON.stringify(stableJsonValue(value), null, space);
 }
 
-function writeSuccess(stdout, command, data, json) {
+function writeSuccess(stdout: CliOutput, command: string, data: unknown, json: boolean) {
   if (json) {
     writeLine(stdout, stableJson({ ok: true, command, data }));
     return;
@@ -228,7 +282,7 @@ function writeSuccess(stdout, command, data, json) {
   writeLine(stdout, stableJson(data, 2));
 }
 
-function snakeCase(value) {
+function snakeCase(value: unknown) {
   return String(value || "runtime_error")
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .replace(/[^a-zA-Z0-9]+/g, "_")
@@ -236,7 +290,7 @@ function snakeCase(value) {
     .toLowerCase() || "runtime_error";
 }
 
-function errorType(error) {
+function errorType(error: CliError) {
   if (error instanceof CliUsageError || error instanceof CliAuthenticationError) {
     return error.type;
   }
@@ -250,21 +304,21 @@ function errorType(error) {
   return "runtime_error";
 }
 
-function errorPayload(error) {
-  const detail = {
+function errorPayload(error: CliError) {
+  const detail: { type: string; message: string; status_code?: number; request_id?: string } = {
     type: errorType(error),
     message: error.message || String(error),
   };
   const statusCode = error.statusCode ?? error.status_code;
   const requestId = error.requestId ?? error.request_id;
-  if (Number.isInteger(statusCode)) detail.status_code = statusCode;
+  if (Number.isInteger(statusCode)) detail.status_code = statusCode as number;
   if (typeof requestId === "string" && requestId.length > 0) {
     detail.request_id = requestId;
   }
   return { ok: false, error: detail };
 }
 
-function exitCodeFor(error) {
+function exitCodeFor(error: CliError) {
   if (error instanceof CliUsageError) return EXIT_USAGE;
   if (
     error instanceof CliAuthenticationError ||
@@ -278,7 +332,7 @@ function exitCodeFor(error) {
   return EXIT_ERROR;
 }
 
-function writeError(stderr, error, json) {
+function writeError(stderr: CliOutput, error: CliError, json: boolean) {
   if (json) {
     writeLine(stderr, stableJson(errorPayload(error)));
     return;
@@ -287,7 +341,7 @@ function writeError(stderr, error, json) {
   writeLine(stderr, `error: ${status}${error.message || String(error)}`);
 }
 
-async function readPrompt(stdin, operands) {
+async function readPrompt(stdin: CliInput, operands: string[]) {
   if (operands.includes("-") && !(operands.length === 1 && operands[0] === "-")) {
     throw new CliUsageError("'-' must be the only prompt argument", "input_error");
   }
@@ -326,7 +380,7 @@ async function readPrompt(stdin, operands) {
   return prompt;
 }
 
-function requireApiKey(client) {
+function requireApiKey(client: CliClient) {
   if (!client.apiKey) {
     throw new CliAuthenticationError(
       "no API key found; set TRUSTEDROUTER_API_KEY (or TR_API_KEY)",
@@ -334,23 +388,26 @@ function requireApiKey(client) {
   }
 }
 
-function completionText(response) {
+function completionText(response: ChatCompletion) {
   const content = response?.choices?.[0]?.message?.content;
   return typeof content === "string" ? content : "";
 }
 
-function bytesToUtf8(value) {
+function bytesToUtf8(value: Uint8Array) {
   return new TextDecoder().decode(value);
 }
 
-function attestationData(value) {
+function attestationData(value: unknown) {
   if (value && typeof value === "object" && "rawClaims" in value) {
     return { ...value };
   }
   return value;
 }
 
-async function runChat({ client, operands, stdin, stdout, values, json, signal }) {
+async function runChat({ client, operands, stdin, stdout, values, json, signal }: {
+  client: CliClient; operands: string[]; stdin: CliInput; stdout: CliOutput;
+  values: CliValues; json: boolean; signal: AbortSignal | null;
+}) {
   const prompt = await readPrompt(stdin, operands);
   const model = values.model ?? AUTO_MODEL;
   if (!String(model).trim()) throw new CliUsageError("--model cannot be empty");
@@ -358,7 +415,7 @@ async function runChat({ client, operands, stdin, stdout, values, json, signal }
     min: 1,
   });
   requireApiKey(client);
-  const request = {
+  const request: ChatRequest = {
     model,
     messages: [{ role: "user", content: prompt }],
     max_tokens: maxTokens,
@@ -378,7 +435,10 @@ async function runChat({ client, operands, stdin, stdout, values, json, signal }
   else writeSuccess(stdout, "chat", completionText(response), false);
 }
 
-async function runAttest({ client, stdout, values, json, dependencies }) {
+async function runAttest({ client, stdout, values, json, dependencies }: {
+  client: CliClient; stdout: CliOutput; values: CliValues;
+  json: boolean; dependencies: CliDependencies;
+}) {
   if (values.session) {
     const release = await client.trustRelease();
     const policy = await dependencies.policyFromTrustRelease({ release });
@@ -417,7 +477,7 @@ async function runAttest({ client, stdout, values, json, dependencies }) {
   writeSuccess(stdout, "attest.verify", attestationData(verified), json);
 }
 
-async function runCommand(parsed, context) {
+async function runCommand(parsed: ParsedCliArgs, context: CommandContext) {
   const { command, operands, values } = parsed;
   const { dependencies, env, stdin, stdout, signal } = context;
   const json = values.json === true;
@@ -454,7 +514,7 @@ async function runCommand(parsed, context) {
   }
 }
 
-function defaultDependencies() {
+function defaultDependencies(): CliDependencies {
   return {
     clientFactory: (options) => new TrustedRouter(options),
     fetchAttestationAgain,
@@ -464,14 +524,14 @@ function defaultDependencies() {
   };
 }
 
-export async function runCli(argv = [], {
+export async function runCli(argv: string[] = [], {
   stdin = process.stdin,
   stdout = process.stdout,
   stderr = process.stderr,
   env = process.env,
   signal = null,
   dependencies: dependencyOverrides = {},
-} = {}) {
+}: CliOptions = {}) {
   const optionTerminator = argv.indexOf("--");
   const optionTokens = optionTerminator === -1 ? argv : argv.slice(0, optionTerminator);
   const jsonRequested = optionTokens.includes("--json");
