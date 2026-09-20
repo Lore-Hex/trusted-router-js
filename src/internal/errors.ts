@@ -15,14 +15,24 @@
 import { parseRetryAfter } from "./transport.js";
 
 export class TrustedRouterError extends Error {
-  constructor(statusCode, message, payload) {
+  declare statusCode: number;
+  declare payload: unknown;
+  declare layer: string | null;
+  declare source: string | null;
+  declare provider: string | null;
+  declare requestId: string | null;
+
+  constructor(statusCode: number, message: string, payload?: unknown) {
     super(message);
     this.name = "TrustedRouterError";
     this.statusCode = statusCode;
     this.payload = payload;
-    const detail = payload?.error && typeof payload.error === "object"
-      ? payload.error
-      : (payload && typeof payload === "object" ? payload : {});
+    // Property projections preserve the original reads, including boxed primitives
+    // and getters. Values remain unknown until the existing checks narrow them.
+    const detail = ((payload as { error?: unknown } | null | undefined)?.error &&
+      typeof (payload as { error: unknown }).error === "object"
+      ? (payload as { error: object }).error
+      : (payload && typeof payload === "object" ? payload : {})) as Record<string, unknown>;
     this.layer = typeof detail.layer === "string" ? detail.layer : null;
     this.source = typeof detail.source === "string" ? detail.source : null;
     this.provider = typeof detail.provider === "string" ? detail.provider : null;
@@ -31,42 +41,44 @@ export class TrustedRouterError extends Error {
 }
 
 export class BadRequestError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "BadRequestError";
   }
 }
 
 export class AuthenticationError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "AuthenticationError";
   }
 }
 
 export class PermissionDeniedError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "PermissionDeniedError";
   }
 }
 
 export class NotFoundError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "NotFoundError";
   }
 }
 
 export class EndpointNotSupportedError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "EndpointNotSupportedError";
   }
 }
 
 export class RateLimitError extends TrustedRouterError {
-  constructor(statusCode, message, payload, retryAfter = null) {
+  declare retryAfter: number | null;
+
+  constructor(statusCode: number, message: string, payload?: unknown, retryAfter: number | null = null) {
     super(statusCode, message, payload);
     this.name = "RateLimitError";
     this.retryAfter = retryAfter;
@@ -74,13 +86,13 @@ export class RateLimitError extends TrustedRouterError {
 }
 
 export class InternalError extends TrustedRouterError {
-  constructor(...args) {
+  constructor(...args: ConstructorParameters<typeof TrustedRouterError>) {
     super(...args);
     this.name = "InternalError";
   }
 }
 
-export function classifyError(statusCode, message, payload, retryAfter) {
+export function classifyError(statusCode: number, message: string, payload?: unknown, retryAfter?: number | null) {
   if (statusCode === 401)
     return new AuthenticationError(statusCode, message, payload);
   if (statusCode === 403)
@@ -97,19 +109,20 @@ export function classifyError(statusCode, message, payload, retryAfter) {
   return new TrustedRouterError(statusCode, message, payload);
 }
 
-export function errorMessage(payload) {
+export function errorMessage(payload: unknown): unknown {
   if (payload && typeof payload === "object") {
-    if (payload.error && typeof payload.error === "object") {
-      return payload.error.message || payload.error.type;
+    if ((payload as Record<string, unknown>).error && typeof (payload as Record<string, unknown>).error === "object") {
+      return ((payload as Record<string, unknown>).error as Record<string, unknown>).message ||
+        ((payload as Record<string, unknown>).error as Record<string, unknown>).type;
     }
-    return payload.message;
+    return (payload as Record<string, unknown>).message;
   }
   return undefined;
 }
 
-export async function jsonOrThrow(response) {
+export async function jsonOrThrow(response: Response): Promise<unknown> {
   const text = await response.text();
-  let payload = null;
+  let payload: unknown = null;
   if (text) {
     try {
       payload = JSON.parse(text);
@@ -120,7 +133,8 @@ export async function jsonOrThrow(response) {
   if (!response.ok) {
     throw classifyError(
       response.status,
-      errorMessage(payload) || response.statusText || "TrustedRouter error",
+      // Error's constructor performs the original coercion of a truthy JSON value.
+      (errorMessage(payload) || response.statusText || "TrustedRouter error") as string,
       payload,
       parseRetryAfter(response.headers),
     );
@@ -128,9 +142,9 @@ export async function jsonOrThrow(response) {
   return payload ?? {};
 }
 
-export async function throwFromResponse(response) {
+export async function throwFromResponse(response: Response): Promise<never> {
   const text = await response.text().catch(() => "");
-  let payload = null;
+  let payload: unknown = null;
   if (text) {
     try {
       payload = JSON.parse(text);
@@ -140,7 +154,8 @@ export async function throwFromResponse(response) {
   }
   throw classifyError(
     response.status,
-    errorMessage(payload) || response.statusText || "TrustedRouter error",
+    // Error's constructor performs the original coercion of a truthy JSON value.
+    (errorMessage(payload) || response.statusText || "TrustedRouter error") as string,
     payload,
     parseRetryAfter(response.headers),
   );
