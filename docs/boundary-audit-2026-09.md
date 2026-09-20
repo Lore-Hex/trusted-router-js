@@ -767,3 +767,15 @@ src/session.ts:428:   const statusMatch = /^HTTP\/1\.([01]) ([0-9]{3})(?: .*)?$/
 src/session.ts:432:   const httpMinor = statusMatch[1];
 src/session.ts:433:   const statusCode = Number(statusMatch[2]);
 ```
+
+## Wire-contract correction (found by the SDK conformance gate on PR #39)
+
+The first cut of the `/auth/keys` guard required a `data` record because the hand-written
+`OAuthKeyExchangeResponse` type declared one. The wire never guaranteed it: the conformance
+harness (scenario `oauth-no-credentials`) answers `{key, user_id}` and the Python reference SDK
+requires only `key`. The same guard family would also have rejected the control plane's legacy
+userinfo answer `{data: {sub: null, workspace_id}}`. Rule adopted: a boundary guard requires the
+fields the SDK consumes (and the wire guarantees), passes the rest through, and the declared type
+is corrected to match the producer — never the other way round. The producers' literal payloads
+now live in `test/wire-fixtures.test.js`; the local check is
+`tr-conformance --sdk javascript --sdk-root javascript=<checkout>` from trusted-router-sdk-conformance.

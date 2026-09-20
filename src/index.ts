@@ -505,7 +505,8 @@ export interface OAuthKeyExchangeResponse {
   key: string;
   user_id?: string | null;
   identity?: OAuthIdentity | null;
-  data: Record<string, unknown>;
+  /** The delegated key's record as the control plane returns it; minimal exchange responses omit it. */
+  data?: Record<string, unknown>;
 }
 
 /** A sourced email-domain match, not proof of employment or investor endorsement. */
@@ -529,9 +530,16 @@ export interface OAuthIdentity {
   [extra: string]: unknown;
 }
 
-export interface UserInfoData extends OAuthIdentity {
+export interface UserInfoData {
+  /** null only for legacy ownerless API keys, which have no signed-in user behind them. */
+  sub: string | null;
+  email?: string | null;
+  email_verified?: boolean | null;
+  wallet_address?: string | null;
+  company_affiliations?: CompanyAffiliation[];
   workspace_id?: string | null;
   created_at?: string | null;
+  [extra: string]: unknown;
 }
 
 export interface UserInfoResponse {
