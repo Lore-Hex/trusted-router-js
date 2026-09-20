@@ -201,16 +201,16 @@ test("an empty release is refused", async () => {
   );
 });
 
-test("a release whose accepted lists hold no usable strings is refused", async () => {
+test("a release whose accepted lists hold malformed pins is refused", async () => {
   await assert.rejects(
     () => policyFromTrustRelease({ release: { accepted_image_digests: [null, 7, ""] } }),
-    /pins no image identity/,
+    { name: "AttestationVerificationError", message: /accepted_image_digests\[0\]/ },
   );
 });
 
 test("a release with only one identity kind is still accepted", async () => {
-  const policy = await policyFromTrustRelease({ release: { image_digest: "sha256:beef" } });
-  assert.deepEqual(policy.imageDigests, ["sha256:beef"]);
+  const policy = await policyFromTrustRelease({ release: { image_digest: `sha256:${"b".repeat(64)}` } });
+  assert.deepEqual(policy.imageDigests, [`sha256:${"b".repeat(64)}`]);
   assert.deepEqual(policy.imageReferences, []);
   assert.ok(pinsImageIdentity(policy));
 });
