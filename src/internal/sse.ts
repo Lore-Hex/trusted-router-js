@@ -9,6 +9,7 @@
  * module it is final — a broken open stream propagates, never reconnects.
  */
 
+import { isRecord, setOwn } from "./records.js";
 import type { ChatCompletion, ChatCompletionChunk } from "../index.js";
 
 import { InternalError } from "./errors.js";
@@ -95,6 +96,7 @@ async function* decodeSseChunks(response: Response) {
   const decoder = new TextDecoder();
   let buffer = "";
   let sawDone = false;
+  // Node 20 fetch bodies implement async byte iteration with ArrayBuffer-backed chunks.
   for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array<ArrayBuffer>>) {
     buffer += decoder.decode(chunk, { stream: true });
     const lines = buffer.split(/\r?\n/);
@@ -135,6 +137,7 @@ async function* decodeSseEvents(response: Response) {
   let buffer = "";
   let frame: string[] = [];
   let sawDone = false;
+  // Node 20 fetch bodies implement async byte iteration with ArrayBuffer-backed chunks.
   for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array<ArrayBuffer>>) {
     buffer += decoder.decode(chunk, { stream: true });
     const lines = buffer.split(/\r?\n/);
@@ -201,19 +204,19 @@ export function parseSseLine(line: string): JsonObject | null {
       cause: String(error),
     });
   }
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+  if (!isRecord(payload)) {
     throw protocolError(
       "TrustedRouter SSE data frame must contain a JSON object",
       payload,
     );
   }
-  if (typeof (payload as JsonObject).error === "string" || ((payload as JsonObject).error && typeof (payload as JsonObject).error === "object")) {
+  if (typeof payload.error === "string" || isRecord(payload.error) || Array.isArray(payload.error)) {
     throw protocolError("TrustedRouter SSE stream reported an error", payload);
   }
-  return payload as JsonObject;
+  return payload;
 }
 
-export function parseSseFrame(lines: string[]): JsonObject | unknown[] | null {
+export function parseSseFrame(lines: string[]): JsonObject | null {
   if (!lines.length) return null;
   let event = null;
   const dataParts = [];
@@ -234,16 +237,16 @@ export function parseSseFrame(lines: string[]): JsonObject | unknown[] | null {
       cause: String(error),
     });
   }
+  if (Array.isArray(payload)) throw protocolError("TrustedRouter SSE event must not be an array", payload);
   if (
     event &&
-    payload &&
-    typeof payload === "object" &&
+    isRecord(payload) &&
     !Object.hasOwn(payload, "event")
   ) {
     return { event, ...payload };
   }
-  return payload && typeof payload === "object"
-    ? payload as JsonObject | unknown[]
+  return isRecord(payload)
+    ? payload
     : { event, data: payload };
 }
 
@@ -272,15 +275,15 @@ export function collectCompletion(chunks: Array<JsonObject | null | undefined>):
   for (const c of chunks) {
     for (const [key, value] of Object.entries(c ?? {})) {
       if (!["choices", "usage", "trustedrouter", "object"].includes(key)) {
-        envelope[key] = value;
+        setOwn(envelope, key, value);
       }
     }
-    if (c?.usage && typeof c.usage === "object") usage = c.usage;
+    if (isRecord(c?.usage)) usage = c.usage;
     if (!Array.isArray(c?.choices)) continue;
     for (let ordinal = 0; ordinal < c.choices.length; ordinal += 1) {
-      const choice = c.choices[ordinal] as JsonObject | null | undefined;
-      if (!choice || typeof choice !== "object") continue;
-      const index = Number.isInteger(choice.index) ? choice.index as number : ordinal;
+      const choice: unknown = c.choices[ordinal];
+      if (!isRecord(choice)) continue;
+      const index = typeof choice.index === "number" && Number.isInteger(choice.index) ? choice.index : ordinal;
       let state = choicesByIndex.get(index);
       if (!state) {
         state = {
@@ -299,14 +302,14 @@ export function collectCompletion(chunks: Array<JsonObject | null | undefined>):
       }
       for (const [key, value] of Object.entries(choice)) {
         if (!["index", "delta", "finish_reason"].includes(key)) {
-          state.choiceExtras[key] = value;
+          setOwn(state.choiceExtras, key, value);
         }
       }
       const delta = choice.delta ?? {};
-      if (!delta || typeof delta !== "object" || Array.isArray(delta)) {
+      if (!isRecord(delta)) {
         throw protocolError("TrustedRouter completion choice delta must be an object", choice);
       }
-      for (const [key, value] of Object.entries(delta as JsonObject)) {
+      for (const [key, value] of Object.entries(delta)) {
         state.seenDeltaFields.add(key);
         if (key === "role" && typeof value === "string") {
           state.role = value;
@@ -316,14 +319,14 @@ export function collectCompletion(chunks: Array<JsonObject | null | undefined>):
             parts.push(value);
             state.parts.set(key, parts);
           } else if (value !== null) {
-            state.messageExtras[key] = value;
+            setOwn(state.messageExtras, key, value);
           }
         } else if (key === "tool_calls") {
           mergeToolCallDeltas(state.toolCalls, value);
         } else if (key === "function_call") {
           mergeFunctionCallDelta(state, value);
         } else {
-          state.messageExtras[key] = value;
+          setOwn(state.messageExtras, key, value);
         }
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
@@ -341,7 +344,7 @@ export function collectCompletion(chunks: Array<JsonObject | null | undefined>):
     for (const field of concatenatedFields) {
       const parts = state.parts.get(field);
       if (parts?.length) message[field] = parts.join("");
-      else if (state.seenDeltaFields.has(field) && !(field in message)) message[field] = null;
+      else if (state.seenDeltaFields.has(field) && !Object.hasOwn(message, field)) message[field] = null;
     }
     if (state.toolCalls.size) {
       message.tool_calls = [...state.toolCalls.keys()]
@@ -349,9 +352,9 @@ export function collectCompletion(chunks: Array<JsonObject | null | undefined>):
         .map((toolIndex) => state.toolCalls.get(toolIndex));
     }
     if (state.sawFunctionCall) message.function_call = state.functionCall;
-    if (!("content" in message)) {
+    if (!Object.hasOwn(message, "content")) {
       message.content = state.toolCalls.size || state.sawFunctionCall ||
-          ["reasoning", "reasoning_content", "refusal"].some((field) => field in message)
+          ["reasoning", "reasoning_content", "refusal"].some((field) => Object.hasOwn(message, field))
         ? null
         : "";
     }
@@ -383,22 +386,22 @@ function collectTrustedRouterMetadata(chunks: Array<JsonObject | null | undefine
 
   for (const chunk of chunks) {
     const trusted = chunk?.trustedrouter;
-    if (!trusted || typeof trusted !== "object" || Array.isArray(trusted)) continue;
+    if (!isRecord(trusted)) continue;
 
     // Synth needs structural aggregation, but every sibling is ordinary
     // envelope metadata. Preserve those fields across chunks with the same
     // last-frame-wins rule used by the completion envelope itself.
     trustedRouterDetails = {
       ...trustedRouterDetails,
-      ...Object.fromEntries(Object.entries(trusted as JsonObject).filter(([key]) => key !== "synth")),
+      ...Object.fromEntries(Object.entries(trusted).filter(([key]) => key !== "synth")),
     };
 
-    const synth = (trusted as JsonObject).synth;
-    if (!synth || typeof synth !== "object" || Array.isArray(synth)) continue;
+    const synth = (trusted).synth;
+    if (!isRecord(synth)) continue;
 
     const synthChunk: JsonObject = { ...synth };
     if (Object.hasOwn(synthChunk, "event")) synthEvents.push(synthChunk);
-    else Object.assign(synthDetails, synthChunk);
+    else for (const [key, value] of Object.entries(synthChunk)) setOwn(synthDetails, key, value);
   }
 
   const hasSynth = synthEvents.length > 0 || Object.keys(synthDetails).length > 0;
@@ -434,7 +437,7 @@ function collectTrustedRouterMetadata(chunks: Array<JsonObject | null | undefine
 
 function trustedRouterSynthEventDetail(event: JsonObject) {
   const detail = event.detail;
-  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+  if (!isRecord(detail)) return null;
   const result: JsonObject = { ...detail };
   for (const key of ["stage", "index", "model"]) {
     if (Object.hasOwn(event, key) && !Object.hasOwn(result, key)) result[key] = event[key];
@@ -444,9 +447,9 @@ function trustedRouterSynthEventDetail(event: JsonObject) {
 
 function mergeToolCallDeltas(toolCalls: Map<number, ToolCall>, value: unknown) {
   if (!Array.isArray(value)) return;
-  (value as unknown[]).forEach((call, ordinal) => {
-    if (!call || typeof call !== "object") return;
-    const index = Number.isInteger((call as JsonObject).index) ? (call as JsonObject).index as number : ordinal;
+  value.forEach((call: unknown, ordinal) => {
+    if (!isRecord(call)) return;
+    const index = typeof call.index === "number" && Number.isInteger(call.index) ? call.index : ordinal;
     let slot = toolCalls.get(index);
     if (!slot) {
       slot = {
@@ -456,23 +459,23 @@ function mergeToolCallDeltas(toolCalls: Map<number, ToolCall>, value: unknown) {
       };
       toolCalls.set(index, slot);
     }
-    for (const [key, item] of Object.entries(call as JsonObject)) {
-      if (!["index", "function"].includes(key)) slot[key] = item;
+    for (const [key, item] of Object.entries(call)) {
+      if (!["index", "function"].includes(key)) setOwn(slot, key, item);
     }
-    if ((call as JsonObject).function && typeof (call as JsonObject).function === "object") {
-      for (const [key, item] of Object.entries((call as JsonObject).function as JsonObject)) {
-        if (key === "arguments" && typeof item === "string") (slot.function.arguments as string) += item;
-        else if (item !== null && item !== undefined) slot.function[key] = item;
+    if (isRecord(call.function)) {
+      for (const [key, item] of Object.entries(call.function)) {
+        if (key === "arguments" && typeof item === "string") slot.function.arguments = String(slot.function.arguments) + item;
+        else if (item !== null && item !== undefined) setOwn(slot.function, key, item);
       }
     }
   });
 }
 
 function mergeFunctionCallDelta(state: ChoiceState, value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  if (!isRecord(value)) return;
   state.sawFunctionCall = true;
-  for (const [key, item] of Object.entries(value as JsonObject)) {
-    if (key === "arguments" && typeof item === "string") (state.functionCall.arguments as string) += item;
-    else if (item !== null && item !== undefined) state.functionCall[key] = item;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "arguments" && typeof item === "string") state.functionCall.arguments = String(state.functionCall.arguments) + item;
+    else if (item !== null && item !== undefined) setOwn(state.functionCall, key, item);
   }
 }

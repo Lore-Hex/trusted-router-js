@@ -1,3 +1,4 @@
+import { isRecord, errorText } from "../internal/records.js";
 import { parseArgs } from "node:util";
 
 import {
@@ -184,7 +185,7 @@ function parseCliArgs(argv: string[]) {
     });
   } catch (error) {
     // node:util parseArgs throws Error instances; retain the original message access.
-    throw new CliUsageError((error as Error).message);
+    throw new CliUsageError(errorText(error));
   }
 
   const { values, positionals } = parsed;
@@ -245,8 +246,8 @@ function writeLine(stream: CliOutput, value: unknown = "") {
 
 function stableJsonValue(value: unknown, ancestors = new Set<object>()): unknown {
   if (value === null || typeof value !== "object") return value;
-  if (typeof (value as Record<string, unknown>).toJSON === "function") {
-    return stableJsonValue((value as { toJSON(): unknown }).toJSON(), ancestors);
+  if ("toJSON" in value && typeof value.toJSON === "function") {
+    return stableJsonValue(Reflect.apply(value.toJSON, value, []), ancestors);
   }
   if (ancestors.has(value)) {
     throw new TypeError("cannot serialize a circular value");
@@ -256,14 +257,14 @@ function stableJsonValue(value: unknown, ancestors = new Set<object>()): unknown
   let normalized: unknown[] | Record<string, unknown>;
   if (Array.isArray(value)) {
     normalized = value.map((item: unknown) => stableJsonValue(item, ancestors));
-  } else {
-    normalized = Object.create(null) as Record<string, unknown>;
+  } else if (isRecord(value)) {
+    normalized = {};
     for (const key of Object.keys(value).sort()) {
-      normalized[key] = stableJsonValue((value as Record<string, unknown>)[key], ancestors);
+      Object.defineProperty(normalized, key, { value: stableJsonValue(value[key], ancestors), enumerable: true });
     }
   }
   ancestors.delete(value);
-  return normalized;
+  return normalized!;
 }
 
 function stableJson(value: unknown, space?: number) {
@@ -311,7 +312,7 @@ function errorPayload(error: CliError) {
   };
   const statusCode = error.statusCode ?? error.status_code;
   const requestId = error.requestId ?? error.request_id;
-  if (Number.isInteger(statusCode)) detail.status_code = statusCode as number;
+  if (typeof statusCode === "number" && Number.isInteger(statusCode)) detail.status_code = statusCode;
   if (typeof requestId === "string" && requestId.length > 0) {
     detail.request_id = requestId;
   }
@@ -398,7 +399,7 @@ function bytesToUtf8(value: Uint8Array) {
 }
 
 function attestationData(value: unknown) {
-  if (value && typeof value === "object" && "rawClaims" in value) {
+  if (isRecord(value) && Object.hasOwn(value, "rawClaims")) {
     return { ...value };
   }
   return value;
@@ -502,6 +503,7 @@ async function runCommand(parsed: ParsedCliArgs, context: CommandContext) {
       case "attest":
         await runAttest({ client, stdout, values, json, dependencies });
         break;
+      case null:
       default:
         throw new CliUsageError(`unknown command: ${command}`);
     }

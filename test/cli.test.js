@@ -595,3 +595,14 @@ test("API errors expose a stable JSON shape and exit family", async () => {
     error: { type: "runtime_error", message: "unexpected bug" },
   });
 });
+
+test("Boundary audit: attestation CLI does not spread an array as a record", async () => {
+  const result = await invoke(["attest", "--verify", "--json"], {
+    dependencies: {
+      async policyFromTrustRelease() { return {}; },
+      async verifyGatewayAttestation() { return Object.assign([], { rawClaims: {} }); },
+    },
+  });
+  assert.equal(result.code, EXIT_SUCCESS);
+  assert.deepEqual(JSON.parse(result.stdout).data, []);
+});

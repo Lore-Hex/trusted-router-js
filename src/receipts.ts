@@ -6,6 +6,7 @@
  * duplicate object members, which JSON.parse alone cannot report.
  */
 
+import { isRecord } from "./internal/records.js";
 import { receiptVerificationDependencies } from "./internal/receipt-dependencies.js";
 
 export type ReceiptAttestationStatus = "verified" | "unverified_by_this_sdk";
@@ -128,9 +129,6 @@ export class ReceiptAttestationError extends ReceiptVerificationError {}
 export class MissingAttestationError extends ReceiptAttestationError {}
 export class UnsupportedAttestationError extends ReceiptAttestationError {}
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function hasOwn(value: object, key: PropertyKey) {
   return Object.prototype.hasOwnProperty.call(value, key);

@@ -711,3 +711,28 @@ test("bounded recorder history still produces exact counters past attempt index 
     first_attempt_success: 0,
   });
 });
+
+test("Boundary audit: telemetry reads tuple headers through transport normalization", () => {
+  const recorder = new RequestRecorder({ endpoint: "embeddings", method: "POST", now: () => 0 });
+  recorder.beginAttempt("https://api.trustedrouter.com/v1");
+  recorder.onResponse(200, [["X-Request-Id", REQUEST_ID]]);
+  assert.equal(recorder.attempts[0].requestId, REQUEST_ID);
+});
+
+test("Boundary audit: telemetry error chains exclude array records", async () => {
+  const { errorChain } = await import("../dist/internal/telemetry.js");
+  const error = Object.assign([], { cause: { code: "ENOTFOUND" } });
+  assert.deepEqual(errorChain(error), [error]);
+});
+
+test("Boundary audit: telemetry classifier excludes array records", async () => {
+  const { classifyTransportError } = await import("../dist/internal/telemetry.js");
+  assert.equal(classifyTransportError(Object.assign([], { code: "ENOTFOUND", name: "ConnectTimeoutError" })), "unknown");
+});
+
+test("Boundary audit: telemetry timeout name excludes array records", () => {
+  const recorder = new RequestRecorder({ endpoint: "embeddings", method: "POST", now: () => 0 });
+  recorder.beginAttempt("https://api.trustedrouter.com/v1");
+  recorder.onTransportError(Object.assign([], { name: "TimeoutError" }));
+  assert.equal(recorder.attempts[0].outcome, "transport_error");
+});

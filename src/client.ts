@@ -14,6 +14,7 @@
  * creates lazily on the first inference call and flushes in `close()`.
  */
 
+import { requireRecord, responseObject, responseTokens, userInfo, keyExchange, chatChunk } from "./internal/wire.js";
 import { TelemetryReporter, sdkIdentity } from "./internal/beacon.js";
 import {
   classifyError,
@@ -70,6 +71,25 @@ interface InternalClientOptions extends TrustedRouterOptions {
   failoverRegions?: unknown;
   _telemetrySink?: ClientTelemetrySink | null;
 }
+
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_CHATREQUEST = Object.freeze({}) as ChatRequest;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_FUSIONREQUEST = Object.freeze({}) as FusionRequest;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_RESPONSESREQUEST = Object.freeze({}) as ResponsesRequest;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_BROADCASTDESTINATIONREQUEST = Object.freeze({}) as BroadcastDestinationRequest;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_BILLINGCHECKOUTREQUEST = Object.freeze({}) as BillingCheckoutRequest;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_OMITBILLINGCHECKOUTREQUESTPAYMENTMETHOD = Object.freeze({}) as Omit<BillingCheckoutRequest, "paymentMethod">;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_OAUTHAUTHORIZEURLOPTIONS = Object.freeze({}) as OAuthAuthorizeUrlOptions;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_CREATEOAUTHAUTHORIZATIONOPTIONS = Object.freeze({}) as CreateOAuthAuthorizationOptions;
+// SDK-only empty default preserves omitted-argument behavior; methods supply/check fields.
+const EMPTY_OAUTHKEYEXCHANGEREQUEST = Object.freeze({}) as OAuthKeyExchangeRequest;
 
 export class TrustedRouter {
   declare apiKey: string | null;
@@ -192,7 +212,7 @@ export class TrustedRouter {
 
   request(method: string, path: string, init?: RequestOptions): Promise<Record<string, unknown>>;
   async request(method: string, path: string, init: TransportRequestInit = {}): Promise<Record<string, unknown>> {
-    return requestJson(this, method, path, init) as Promise<Record<string, unknown>>;
+    return requireRecord(await requestJson(this, method, path, init));
   }
 
   /**
@@ -204,7 +224,7 @@ export class TrustedRouter {
     return requestStream(this, method, path, init);
   }
 
-  _controlRequest(method: string, path: string, init: TransportRequestInit = {}): Promise<Record<string, unknown>> {
+  _controlRequest(method: string, path: string, init: RequestOptions & Pick<TransportRequestInit, "_credentialFree"> = {}): Promise<Record<string, unknown>> {
     const requestInit = { ...init };
     if (
       requestInit._credentialFree !== true &&
@@ -213,10 +233,8 @@ export class TrustedRouter {
     ) {
       requestInit.idempotencyKey = newIdempotencyKey();
     }
-    return this.request(method, path, {
-      ...requestInit,
-      _baseUrls: [this.controlBaseUrl],
-    } as RequestOptions);
+    const controlInit = { ...requestInit, _baseUrls: [this.controlBaseUrl] };
+    return this.request(method, path, controlInit);
   }
 
   // ---- chat ------------------------------------------------------------
@@ -232,7 +250,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ChatRequest = {} as ChatRequest): Promise<ChatCompletion> {
+  }: ChatRequest = EMPTY_CHATREQUEST): Promise<ChatCompletion> {
     // The gateway always streams. Collect chunks into an OpenAI-shape
     // chat.completion dict so callers that asked for non-streaming
     // still get a single result back.
@@ -265,7 +283,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ChatRequest = {} as ChatRequest) {
+  }: ChatRequest = EMPTY_CHATREQUEST) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
@@ -280,11 +298,11 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    yield* iterSseChunks(response) as AsyncIterable<ChatCompletionChunk>;
+    for await (const chunk of iterSseChunks(response)) yield chatChunk(chunk);
   }
 
   /** Yield only the text deltas — the simplest streaming consumer. */
-  async *chatCompletionsText(opts: ChatRequest = {} as ChatRequest): AsyncIterable<string> {
+  async *chatCompletionsText(opts: ChatRequest = EMPTY_CHATREQUEST): AsyncIterable<string> {
     for await (const chunk of this.chatCompletionsChunks(opts)) {
       const text = chunk?.choices?.[0]?.delta?.content;
       if (typeof text === "string" && text.length > 0) {
@@ -305,7 +323,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ChatRequest = {} as ChatRequest) {
+  }: ChatRequest = EMPTY_CHATREQUEST) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/chat/completions", {
       headers: { accept: "text/event-stream" },
@@ -320,6 +338,7 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
+    // Node 20 fetch bodies implement async byte iteration; DOM typings omit that protocol.
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       yield chunk;
     }
@@ -345,7 +364,7 @@ export class TrustedRouter {
     maxToolCalls = null,
     preset = null,
     ...params
-  }: FusionRequest = {} as FusionRequest): Promise<ChatCompletion> {
+  }: FusionRequest = EMPTY_FUSIONREQUEST): Promise<ChatCompletion> {
     return this.chatCompletions({
       model: FUSION_MODEL,
       messages,
@@ -440,7 +459,7 @@ export class TrustedRouter {
   }
 
   responses(options: ResponsesRequest): Promise<ResponseObject>;
-  responses({
+  async responses({
     model = AUTO_MODEL,
     input,
     instructions = null,
@@ -451,9 +470,9 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ResponsesRequest = {} as ResponsesRequest): Promise<ResponseObject> {
+  }: ResponsesRequest = EMPTY_RESPONSESREQUEST): Promise<ResponseObject> {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
-    return this.request("POST", "/responses", {
+    return responseObject(await this.request("POST", "/responses", {
       body: responsesBody({
         model,
         input,
@@ -467,7 +486,7 @@ export class TrustedRouter {
       workspaceId,
       timeout,
       signal,
-    }) as unknown as Promise<ResponseObject>;
+    }));
   }
 
   responsesEvents(options: ResponsesRequest): AsyncIterable<Record<string, unknown>>;
@@ -482,7 +501,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ResponsesRequest = {} as ResponsesRequest) {
+  }: ResponsesRequest = EMPTY_RESPONSESREQUEST) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
@@ -497,7 +516,7 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
-    yield* iterSseEvents(response) as AsyncIterable<Record<string, unknown>>;
+    yield* iterSseEvents(response);
   }
 
   responsesRawStream(options: ResponsesRequest): AsyncIterable<Uint8Array>;
@@ -512,7 +531,7 @@ export class TrustedRouter {
     timeout = null,
     signal = null,
     ...params
-  }: ResponsesRequest = {} as ResponsesRequest) {
+  }: ResponsesRequest = EMPTY_RESPONSESREQUEST) {
     const requestIdempotencyKey = idempotencyKey ?? newIdempotencyKey();
     const response = await this.rawRequest("POST", "/responses", {
       headers: { accept: "text/event-stream" },
@@ -527,13 +546,14 @@ export class TrustedRouter {
     if (!response.ok) {
       await throwFromResponse(response);
     }
+    // Node 20 fetch bodies implement async byte iteration; DOM typings omit that protocol.
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       yield chunk;
     }
   }
 
   responsesInputTokens(options: ResponsesRequest): Promise<ResponseInputTokens>;
-  responsesInputTokens({
+  async responsesInputTokens({
     model = AUTO_MODEL,
     input,
     instructions = null,
@@ -541,8 +561,8 @@ export class TrustedRouter {
     idempotencyKey = null,
     signal = null,
     ...params
-  }: ResponsesRequest = {} as ResponsesRequest): Promise<ResponseInputTokens> {
-    return this.request("POST", "/responses/input_tokens", {
+  }: ResponsesRequest = EMPTY_RESPONSESREQUEST): Promise<ResponseInputTokens> {
+    return responseTokens(await this.request("POST", "/responses/input_tokens", {
       body: responsesBody({
         model,
         input,
@@ -553,7 +573,7 @@ export class TrustedRouter {
       workspaceId,
       idempotencyKey: idempotencyKey ?? newIdempotencyKey(),
       signal,
-    }) as unknown as Promise<ResponseInputTokens>;
+    }));
   }
 
   broadcastDestinations({ workspaceId = null }: { workspaceId?: string | null } = {}) {
@@ -571,7 +591,7 @@ export class TrustedRouter {
     headers = null,
     apiKey = null,
     workspaceId = null,
-  }: BroadcastDestinationRequest = {} as BroadcastDestinationRequest): Promise<Record<string, unknown>> {
+  }: BroadcastDestinationRequest = EMPTY_BROADCASTDESTINATIONREQUEST): Promise<Record<string, unknown>> {
     return this._controlRequest("POST", "/broadcast/destinations", {
       body: broadcastDestinationBody({
         type,
@@ -615,13 +635,13 @@ export class TrustedRouter {
   }
 
   async status(url: string = DEFAULT_STATUS_URL): Promise<Record<string, unknown>> {
-    return jsonOrThrow(
+    return requireRecord(await jsonOrThrow(
       await this.fetch(url, {
         headers: { "user-agent": DEFAULT_USER_AGENT },
         credentials: "omit",
         redirect: "manual",
       }),
-    ) as Promise<Record<string, unknown>>;
+    ));
   }
 
   // ---- billing + auth -------------------------------------------------
@@ -634,7 +654,7 @@ export class TrustedRouter {
     successUrl = null,
     cancelUrl = null,
     idempotencyKey = null,
-  }: BillingCheckoutRequest = {} as BillingCheckoutRequest): Promise<Record<string, unknown>> {
+  }: BillingCheckoutRequest = EMPTY_BILLINGCHECKOUTREQUEST): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = { amount };
     if (paymentMethod !== null) body.payment_method = paymentMethod;
     if (workspaceId !== null) body.workspace_id = workspaceId;
@@ -648,7 +668,7 @@ export class TrustedRouter {
   }
 
   stablecoinCheckout(req: Omit<BillingCheckoutRequest, "paymentMethod">): Promise<Record<string, unknown>>;
-  stablecoinCheckout({ amount, ...params }: Omit<BillingCheckoutRequest, "paymentMethod"> = {} as Omit<BillingCheckoutRequest, "paymentMethod">) {
+  stablecoinCheckout({ amount, ...params }: Omit<BillingCheckoutRequest, "paymentMethod"> = EMPTY_OMITBILLINGCHECKOUTREQUESTPAYMENTMETHOD) {
     return this.billingCheckout({
       amount,
       paymentMethod: "stablecoin",
@@ -669,8 +689,8 @@ export class TrustedRouter {
    * Returns the parsed body, e.g. { data: { sub, email, email_verified,
    * wallet_address, workspace_id, created_at } }.
    */
-  userInfo(): Promise<UserInfoResponse> {
-    return this._controlRequest("GET", "/auth/userinfo") as unknown as Promise<UserInfoResponse>;
+  async userInfo(): Promise<UserInfoResponse> {
+    return userInfo(await this._controlRequest("GET", "/auth/userinfo"));
   }
 
   oauthAuthorizeUrl(options: OAuthAuthorizeUrlOptions): string;
@@ -685,7 +705,7 @@ export class TrustedRouter {
     spawnAgent = null,
     spawnCloud = null,
     state = null,
-  }: OAuthAuthorizeUrlOptions = {} as OAuthAuthorizeUrlOptions): string {
+  }: OAuthAuthorizeUrlOptions = EMPTY_OAUTHAUTHORIZEURLOPTIONS): string {
     if (!callbackUrl) throw new Error("callbackUrl is required");
     if (codeChallengeMethod && !codeChallenge) {
       throw new Error("codeChallenge is required when codeChallengeMethod is set");
@@ -715,7 +735,7 @@ export class TrustedRouter {
     codeVerifier = null,
     state = randomOAuthState(),
     ...options
-  }: CreateOAuthAuthorizationOptions = {} as CreateOAuthAuthorizationOptions): Promise<OAuthAuthorization> {
+  }: CreateOAuthAuthorizationOptions = EMPTY_CREATEOAUTHAUTHORIZATIONOPTIONS): Promise<OAuthAuthorization> {
     const pkce = await createOAuthPkcePair({ codeVerifier });
     return {
       ...pkce,
@@ -730,23 +750,23 @@ export class TrustedRouter {
   }
 
   exchangeOAuthKey(options: OAuthKeyExchangeRequest): Promise<OAuthKeyExchangeResponse>;
-  exchangeOAuthKey({
+  async exchangeOAuthKey({
     code,
     codeVerifier = null,
     codeChallengeMethod = null,
     timeout = null,
-  }: OAuthKeyExchangeRequest = {} as OAuthKeyExchangeRequest): Promise<OAuthKeyExchangeResponse> {
+  }: OAuthKeyExchangeRequest = EMPTY_OAUTHKEYEXCHANGEREQUEST): Promise<OAuthKeyExchangeResponse> {
     if (!code) throw new Error("code is required");
     const body: Record<string, unknown> = { code };
     if (codeVerifier) body.code_verifier = codeVerifier;
     if (codeChallengeMethod) body.code_challenge_method = codeChallengeMethod;
-    return this._controlRequest("POST", "/auth/keys", {
+    return keyExchange(await this._controlRequest("POST", "/auth/keys", {
       body,
       apiKey: "",
       _credentialFree: true,
       credentials: "omit",
       timeout,
-    }) as unknown as Promise<OAuthKeyExchangeResponse>;
+    }));
   }
 
   activity(params: Record<string, string | number | boolean | null | undefined> = {}) {
