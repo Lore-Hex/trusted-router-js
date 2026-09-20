@@ -52,6 +52,11 @@ export type BrowserOAuthInitiateOptions = Omit<
 
 const STORAGE_KEY = "_tr_oauth";
 
+interface StoredOAuthState {
+  codeVerifier: string;
+  state?: string;
+}
+
 export class BrowserOAuthError extends Error {
   constructor(message?: string) {
     super(message);
@@ -127,9 +132,7 @@ export class BrowserOAuthFlow {
    */
   async handleCallback(searchParams: URLSearchParams | string | null = null): Promise<BrowserOAuthCallbackResult> {
     const params = toSearchParams(searchParams);
-    // Storage JSON historically has no shape validation. Keep property reads
-    // (including the native TypeError for null) and unknown field values intact.
-    const stored = this._readStored() as { state?: unknown; codeVerifier?: unknown };
+    const stored = this._readStored();
 
     const returnedState = params.get("state");
     if (stored.state) {
@@ -148,8 +151,7 @@ export class BrowserOAuthFlow {
     try {
       exchanged = await this.client.exchangeOAuthKey({
         code,
-        // Preserve the existing unchecked handoff of malformed stored verifiers.
-        codeVerifier: (stored.codeVerifier ?? null) as string | null,
+        codeVerifier: stored.codeVerifier,
       });
     } finally {
       this.clear();
@@ -171,7 +173,7 @@ export class BrowserOAuthFlow {
     }
   }
 
-  private _readStored(): unknown {
+  private _readStored(): StoredOAuthState {
     let raw;
     try {
       raw = this.storage.getItem(this.storageKey);
@@ -183,11 +185,36 @@ export class BrowserOAuthFlow {
         "no pending OAuth flow found; call initiate() first",
       );
     }
+    let stored: unknown;
     try {
-      return JSON.parse(raw);
+      stored = JSON.parse(raw);
     } catch {
       throw new BrowserOAuthError("stored OAuth state is corrupt");
     }
+
+    if (typeof stored !== "object" || stored === null || Array.isArray(stored)) {
+      this.clear();
+      throw new BrowserOAuthError(
+        "stored OAuth state is malformed: expected an object with string codeVerifier",
+      );
+    }
+    const codeVerifier = "codeVerifier" in stored ? stored.codeVerifier : undefined;
+    if (typeof codeVerifier !== "string" || codeVerifier.length === 0) {
+      this.clear();
+      throw new BrowserOAuthError(
+        "stored OAuth state is malformed: codeVerifier must be a non-empty string",
+      );
+    }
+    if ("state" in stored) {
+      if (typeof stored.state !== "string") {
+        this.clear();
+        throw new BrowserOAuthError(
+          "stored OAuth state is malformed: state must be a string",
+        );
+      }
+      return { codeVerifier, state: stored.state };
+    }
+    return { codeVerifier };
   }
 }
 
