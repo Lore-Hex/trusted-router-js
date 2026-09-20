@@ -4,8 +4,8 @@ import test from "node:test";
 import {
   DEFAULT_CONTROL_BASE_URL,
   TrustedRouter,
-} from "../src/index.js";
-import { BrowserOAuthError, BrowserOAuthFlow } from "../src/oauth.js";
+} from "../dist/index.js";
+import { BrowserOAuthError, BrowserOAuthFlow } from "../dist/oauth.js";
 
 // Not about telemetry: keep this file hermetic. Without the opt-out, the
 // default-on beacon reporter would be created on the first inference call

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import test from "node:test";
 
-import { DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
-import { iterSseChunks } from "../src/internal/sse.js";
+import { DEFAULT_API_BASE_URL, TrustedRouter } from "../dist/index.js";
+import { iterSseChunks } from "../dist/internal/sse.js";
 import {
   RecordingSink,
   RequestRecorder,
   classifyTransportError,
   hostEnum,
   resolveTelemetryEnabled,
-} from "../src/internal/telemetry.js";
+} from "../dist/internal/telemetry.js";
 
 // Engine-path tests drive the REAL loop (performRequest via the client's
 // request/rawRequest/facade methods) with an injected fetch; nothing here

@@ -25,8 +25,8 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
   assert.equal(pkg.version, "0.8.0");
   assert.equal(pkg.license, "Apache-2.0");
   assert.equal(Object.hasOwn(pkg, "dependencies"), false);
-  assert.deepEqual(pkg.bin, { trustedrouter: "./src/cli.js" });
-  assert.deepEqual(pkg.files, ["src", "README.md", "LICENSE"]);
+  assert.deepEqual(pkg.bin, { trustedrouter: "./dist/cli.js" });
+  assert.deepEqual(pkg.files, ["dist", "README.md", "LICENSE"]);
   assert.deepEqual(Object.keys(pkg.exports).sort(), [
     ".",
     "./attestation",
@@ -34,6 +34,12 @@ test("package manifest is configured for a public Apache-2.0 npm release", async
     "./receipts",
     "./session",
   ]);
+  assert.equal(pkg.main, "dist/index.js");
+  assert.equal(pkg.types, "dist/index.d.ts");
+  for (const [subpath, entry] of Object.entries(pkg.exports)) {
+    const name = subpath === "." ? "index" : subpath.slice(2);
+    assert.deepEqual(entry, { types: `./dist/${name}.d.ts`, import: `./dist/${name}.js` });
+  }
   assert.equal(pkg.publishConfig.access, "public");
   assert.equal(pkg.publishConfig.provenance, true);
 });
@@ -50,7 +56,7 @@ export async function resolve(specifier, context, nextResolve) {
   const script = `
 import { register } from "node:module";
 register(${JSON.stringify(`data:text/javascript,${encodeURIComponent(loaderSource)}`)}, import.meta.url);
-const root = await import("./src/index.js");
+const root = await import("./dist/index.js");
 if (typeof root.TrustedRouter !== "function") throw new Error("missing TrustedRouter");
 if (typeof root.verifyReceipt !== "function") throw new Error("missing verifyReceipt");
 if (typeof root.MissingBindingError !== "function") throw new Error("missing MissingBindingError");
@@ -63,7 +69,7 @@ if ("verifyGatewaySession" in root) throw new Error("session verifier is exporte
 test("the packaged bin entrypoint resolves and reports the package version", async () => {
   const { stdout, stderr } = await execFileAsync(
     process.execPath,
-    [path.join(root, "src/cli.js"), "--version"],
+    [path.join(root, "dist/cli.js"), "--version"],
     { cwd: root },
   );
   assert.equal(stdout, "trustedrouter 0.8.0\n");
@@ -115,19 +121,21 @@ test("npm dry-run package contains only release artifacts", async () => {
   assert.ok(paths.includes("package.json"));
   assert.ok(paths.includes("README.md"));
   assert.ok(paths.includes("LICENSE"));
-  assert.ok(paths.includes("src/index.js"));
-  assert.ok(paths.includes("src/index.d.ts"));
-  assert.ok(paths.includes("src/attestation.js"));
-  assert.ok(paths.includes("src/attestation.d.ts"));
-  assert.ok(paths.includes("src/oauth.js"));
-  assert.ok(paths.includes("src/oauth.d.ts"));
-  assert.ok(paths.includes("src/receipts.js"));
-  assert.ok(paths.includes("src/receipts.d.ts"));
-  assert.ok(paths.includes("src/session.js"));
-  assert.ok(paths.includes("src/session.d.ts"));
-  assert.ok(paths.includes("src/cli.js"));
-  assert.ok(paths.includes("src/cli/main.js"));
-  assert.equal(pack.files.find((file) => file.path === "src/cli.js").mode, 0o755);
+  assert.ok(paths.includes("dist/index.js"));
+  assert.ok(paths.includes("dist/index.d.ts"));
+  assert.ok(paths.includes("dist/attestation.js"));
+  assert.ok(paths.includes("dist/attestation.d.ts"));
+  assert.ok(paths.includes("dist/oauth.js"));
+  assert.ok(paths.includes("dist/oauth.d.ts"));
+  assert.ok(paths.includes("dist/receipts.js"));
+  assert.ok(paths.includes("dist/receipts.d.ts"));
+  assert.ok(paths.includes("dist/session.js"));
+  assert.ok(paths.includes("dist/session.d.ts"));
+  assert.ok(paths.includes("dist/cli.js"));
+  assert.ok(paths.includes("dist/cli/main.js"));
+  assert.equal(pack.files.find((file) => file.path === "dist/cli.js").mode, 0o755);
+  assert.ok(paths.every((p) => p.startsWith("dist/") || ["package.json", "README.md", "LICENSE"].includes(p)));
+  assert.equal(paths.some((p) => p.startsWith("src/")), false);
   assert.equal(paths.some((p) => p.startsWith("test/")), false);
   assert.equal(paths.some((p) => p.includes(".private")), false);
   assert.equal(paths.some((p) => p.startsWith(".env")), false);

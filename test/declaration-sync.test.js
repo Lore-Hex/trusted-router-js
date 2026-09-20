@@ -55,8 +55,8 @@ test("declaration parser distinguishes values, aliases, and type-only exports", 
 
 for (const name of ["index", "attestation", "session", "receipts", "oauth"]) {
   test(`${name}: runtime and declared value exports match`, async () => {
-    const moduleUrl = new URL(`../src/${name}.js`, import.meta.url);
-    const declarationUrl = new URL(`../src/${name}.d.ts`, import.meta.url);
+    const moduleUrl = new URL(`../dist/${name}.js`, import.meta.url);
+    const declarationUrl = new URL(`../dist/${name}.d.ts`, import.meta.url);
     const runtime = Object.keys(await import(moduleUrl.href)).sort();
     const declared = declaredValueExports(await readFile(declarationUrl, "utf8"));
     const undeclared = runtime.filter((name) => !declared.includes(name));

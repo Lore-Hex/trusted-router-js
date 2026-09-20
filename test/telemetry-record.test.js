@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TrustedRouter } from "../src/index.js";
+import { TrustedRouter } from "../dist/index.js";
 import {
   RecordingSink,
   RequestRecorder,
@@ -9,7 +9,7 @@ import {
   latencyBucket,
   statusClass,
   timeoutFloorMet,
-} from "../src/internal/telemetry.js";
+} from "../dist/internal/telemetry.js";
 
 // The beacon's RECORD: every test here drives the REAL engine (performRequest
 // via the client's request/rawRequest/facade methods) with an injected fetch

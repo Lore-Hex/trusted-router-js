@@ -35,7 +35,7 @@ import {
   MAX_RETRY_AFTER_SECONDS,
   parseRetryAfter,
   retrySleepMs,
-} from "../src/internal/transport.js";
+} from "../dist/internal/transport.js";
 
 const RUNS = Number(process.env.RUNS || 400);
 const SLEEP_CEILING_MS = Math.max(30_000, MAX_RETRY_AFTER_SECONDS * 1000);

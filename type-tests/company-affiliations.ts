@@ -1,4 +1,4 @@
-import type { OAuthIdentity, UserInfoData } from "../src/index.js";
+import type { OAuthIdentity, UserInfoData } from "../dist/index.js";
 
 export function companyYears(identity: OAuthIdentity, userInfo: UserInfoData): Array<number | null | undefined> {
   return [

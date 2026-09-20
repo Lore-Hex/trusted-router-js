@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ALIAS_API_BASE_URLS, DEFAULT_API_BASE_URL, TrustedRouter } from "../src/index.js";
-import { RecordingSink } from "../src/internal/telemetry.js";
+import { ALIAS_API_BASE_URLS, DEFAULT_API_BASE_URL, TrustedRouter } from "../dist/index.js";
+import { RecordingSink } from "../dist/internal/telemetry.js";
 
 // The domain is a single point of failure above the whole deployment. These
 // prove a client reaches a second domain when the first stops answering — which

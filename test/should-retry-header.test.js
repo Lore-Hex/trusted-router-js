@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { TrustedRouter } from "../src/index.js";
-import { RecordingSink } from "../src/internal/telemetry.js";
+import { TrustedRouter } from "../dist/index.js";
+import { RecordingSink } from "../dist/internal/telemetry.js";
 
 // The gateway's x-should-retry verdict overrides our status heuristics. A
 // status code cannot say whether a provider already ran: a 502 from "could not
@@ -129,7 +129,7 @@ test("retry-after-ms is honored and beats retry-after", async () => {
 // 502/503/504, ignored x-should-retry in both directions, skipped 429
 // backoff, and regionalFailover:false disabled ALL streaming retries.
 
-import { InternalError, RateLimitError } from "../src/index.js";
+import { InternalError, RateLimitError } from "../dist/index.js";
 
 function sse(body) {
   return new Response(body, {

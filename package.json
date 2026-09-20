@@ -3,35 +3,35 @@
   "version": "0.8.0",
   "description": "JavaScript SDK and CLI for TrustedRouter — typed errors, retries, failover, and attestation verification.",
   "type": "module",
-  "main": "src/index.js",
-  "types": "src/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
-    "trustedrouter": "./src/cli.js"
+    "trustedrouter": "./dist/cli.js"
   },
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "import": "./src/index.js"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
     },
     "./attestation": {
-      "types": "./src/attestation.d.ts",
-      "import": "./src/attestation.js"
+      "types": "./dist/attestation.d.ts",
+      "import": "./dist/attestation.js"
     },
     "./oauth": {
-      "types": "./src/oauth.d.ts",
-      "import": "./src/oauth.js"
+      "types": "./dist/oauth.d.ts",
+      "import": "./dist/oauth.js"
     },
     "./receipts": {
-      "types": "./src/receipts.d.ts",
-      "import": "./src/receipts.js"
+      "types": "./dist/receipts.d.ts",
+      "import": "./dist/receipts.js"
     },
     "./session": {
-      "types": "./src/session.d.ts",
-      "import": "./src/session.js"
+      "types": "./dist/session.d.ts",
+      "import": "./dist/session.js"
     }
   },
   "files": [
-    "src",
+    "dist",
     "README.md",
     "LICENSE"
   ],
@@ -46,10 +46,12 @@
     "url": "https://github.com/Lore-Hex/trusted-router-js/issues"
   },
   "scripts": {
-    "check": "node --check src/index.js && node --check src/client.js && node --check src/attestation.js && node --check src/receipts.js && node --check src/session.js && node --check src/oauth.js && node --check src/cli.js && node --check src/cli/main.js && node --check src/internal/beacon.js && node --check src/internal/errors.js && node --check src/internal/models.js && node --check src/internal/orchestration.js && node --check src/internal/pkce.js && node --check src/internal/receipt-dependencies.js && node --check src/internal/sse.js && node --check src/internal/telemetry.js && node --check src/internal/transport.js && node --check src/internal/trust.js && npm run typecheck",
+    "check": "npm run typecheck && node --test test/declaration-sync.test.js",
     "test": "node --test",
     "typecheck": "tsc -p tsconfig.json",
-    "lint:package": "publint && attw --pack . --profile esm-only"
+    "lint:package": "publint && attw --pack . --profile esm-only",
+    "build": "node scripts/build.mjs",
+    "pretest": "npm run build"
   },
   "engines": {
     "node": ">=20"
@@ -71,6 +73,7 @@
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
     "@types/node": "^20.17.9",
+    "esbuild": "^0.28.1",
     "publint": "^0.3.24",
     "typescript": "^5.9.3"
   }

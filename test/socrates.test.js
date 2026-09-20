@@ -9,7 +9,7 @@ import {
   ADVISOR_MODEL,
   TrustedRouter,
   advisorTool,
-} from "../src/index.js";
+} from "../dist/index.js";
 
 // Not about telemetry: keep this file hermetic. Without the opt-out, the
 // default-on beacon reporter would be created on the first inference call
