@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.10.0 — unreleased
+
+### Added
+
+- `verifyGatewayAttestationDocument(document, { policy, nonceHex })`:
+  document-only gateway attestation for callers that cannot see their TLS
+  connection, such as browsers and proxied clients. It runs every token check
+  `verifyGatewayAttestation()` runs (Google signature, issuer, audience,
+  expiry, production Confidential Space claims, image pins) and requires a
+  fresh 16–64-byte caller nonce in `eat_nonce`, but claims no TLS binding.
+  Its `GatewayAttestationDocument` result has `binding: "none"`, no
+  `certSha256`, and `certSha256Candidates` for callers who later hold the
+  certificate. Live gateway tokens carry the certificate hash only as an
+  `eat_nonce` entry, so until now a browser could not pass any gateway check
+  without misusing `verifyReceiptKeyAttestation()`.
+- `binding: "none" | "tls-cert" | "tls-exporter"` on every
+  `GatewayAttestation` (type `AttestationBinding`), reporting which connection
+  evidence was actually compared. `verifyGatewaySession()` and
+  `fetchAttestationAgain()` report `"tls-exporter"`; `tlsCertDer` gives
+  `"tls-cert"`; a certificate hash that is only claimed by the token, or only
+  matched against a policy pin, gives `"none"`.
+- `client.attestation({ nonceHex })` sends the challenge as
+  `/attestation?nonce=`. Without options it is unchanged.
+- `examples/verify-attestation-browser.mjs`: fetch + WebCrypto only, with a
+  pluggable relay for the attestation fetch.
+
+### Changed
+
+- `trustedrouter attest --verify` sends a fresh nonce and verifies the
+  document with `verifyGatewayAttestationDocument()`; it failed against the
+  live gateway before, for the reason above. Its JSON `data` now carries
+  `binding`, `nonce`, and `certSha256Candidates` instead of `certSha256`.
+- `verifyGatewayAttestation()` behaves as before. When it cannot find a
+  certificate commitment without `tlsCertDer`, the error now names the
+  document-only verifier.
+
+### Internal
+
+- Live-shaped claims fixture captured from the gateway, three document-mode
+  mutations in the mutation gate, and a property test for document results.
+- `examples/verify-session.mjs` imports the published subpaths instead of the
+  pre-TypeScript `src/*.js` paths.
+
 ## 0.9.0 — 2026-09-20
 
 ### Added
