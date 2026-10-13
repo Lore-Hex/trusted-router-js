@@ -27,6 +27,7 @@ import {
   policyFromTrustRelease,
   pinsImageIdentity,
   verifyGatewayAttestation,
+  verifyGatewayAttestationDocument,
 } from "../dist/attestation.js";
 
 const RUNS = Number(process.env.RUNS || 200);
@@ -155,6 +156,36 @@ test("property: a verified reference is always in the accepted list", async () =
     }
 
     assert.ok(accepted.includes(workload));
+  }
+});
+
+test("property: a verified document names an accepted image and carries the nonce", async () => {
+  const r = rng(0xd0c5);
+  const hex = (bytes) => Array.from({ length: bytes }, () => Math.floor(r() * 256).toString(16).padStart(2, "0")).join("");
+  for (let i = 0; i < RUNS; i += 1) {
+    const accepted = identifierList(r, 1);
+    const workload = r() < 0.5 ? pick(r, accepted) : identifier(r);
+    const nonceHex = hex(32);
+    const eatNonce = [FAKE_CERT_SHA, hex(32)];
+    if (r() < 0.5) eatNonce.splice(Math.floor(r() * 3), 0, nonceHex);
+    const claims = { ...claimsFor({ imageDigest: workload }), eat_nonce: eatNonce };
+    delete claims.tls_cert_sha256;
+
+    let result;
+    try {
+      result = await verifyGatewayAttestationDocument(makeJwt(claims), {
+        policy: { audience: "quill-cloud", imageDigest: null, imageDigests: accepted, imageReference: null },
+        nonceHex,
+        jwks: { keys: [publicJwk()] },
+      });
+    } catch (err) {
+      assert.ok(err instanceof AttestationVerificationError, `unexpected error: ${err}`);
+      continue;
+    }
+
+    assert.ok(accepted.includes(workload), `accepted digest ${workload} not in ${JSON.stringify(accepted)}`);
+    assert.ok(eatNonce.includes(nonceHex), "accepted a document without the caller nonce");
+    assert.equal(result.binding, "none");
   }
 });
 

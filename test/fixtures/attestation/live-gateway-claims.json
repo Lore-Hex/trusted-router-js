@@ -1,0 +1,62 @@
+{
+  "aud": "quill-cloud",
+  "exp": 1791916394,
+  "iat": 1791912794,
+  "iss": "https://confidentialcomputing.googleapis.com",
+  "nbf": 1791912794,
+  "sub": "https://www.googleapis.com/compute/v1/projects/quill-cloud-proxy/zones/us-central1-b/instances/quill-enclave-mig-us-hvhb",
+  "eat_nonce": [
+    "680d068ac5c0cbf16736d97f1b9b3339b4a41b71909f5312161c7c4bd562e63f",
+    "0a8633b2f07dca789193ccc45206d21431a72a8490985d050c56c6efa44cff00",
+    "0a591958380e0065012083581d48c8db5966cc9121da09a446ddbe915f5fd454",
+    "1b9b85357db3e9ee957cfc84e3369d441a6799ec46f9c468665104320a7cdbde"
+  ],
+  "eat_profile": "https://cloud.google.com/confidential-computing/confidential-space/docs/reference/token-claims",
+  "secboot": true,
+  "oemid": 11129,
+  "hwmodel": "GCP_INTEL_TDX",
+  "swname": "CONFIDENTIAL_SPACE",
+  "swversion": [
+    "260900"
+  ],
+  "attester_tcb": [
+    "INTEL"
+  ],
+  "dbgstat": "disabled-since-boot",
+  "submods": {
+    "confidential_space": {
+      "support_attributes": [
+        "LATEST",
+        "STABLE",
+        "USABLE"
+      ],
+      "monitoring_enabled": {
+        "memory": false
+      }
+    },
+    "container": {
+      "image_reference": "us-central1-docker.pkg.dev/quill-cloud-proxy/quill/enclave-multi:gcp-release-bfac8577",
+      "image_digest": "sha256:bcb69bb9717de9c9683c905381ff16ac64147d9bdad075543171302e76a4fa69",
+      "restart_policy": "Always",
+      "image_id": "sha256:39d0837eb03ddee41e7799fccbd885097677a6bf903f224ee7b526b9951fca8b",
+      "args": [
+        "/quill-enclave"
+      ]
+    },
+    "gce": {
+      "zone": "us-central1-b",
+      "project_id": "quill-cloud-proxy",
+      "project_number": "44325983244",
+      "instance_name": "quill-enclave-mig-us-hvhb",
+      "instance_id": "2202402100760083452"
+    }
+  },
+  "tdx": {
+    "gcp_attester_tcb_status": "UpToDate",
+    "gcp_attester_tcb_date": "2025-05-14T00:00:00Z",
+    "tcb_evaluation_data_number": 19
+  },
+  "google_service_accounts": [
+    "quill-workload@quill-cloud-proxy.iam.gserviceaccount.com"
+  ]
+}

@@ -27,9 +27,12 @@ import {
 import {
   policyFromTrustRelease,
   verifyGatewayAttestation,
+  verifyGatewayAttestationDocument,
   verifyReceiptKeyAttestation,
+  type AttestationBinding,
   type AttestationPolicy,
   type GatewayAttestation,
+  type GatewayAttestationDocument,
 } from "@lore-hex/trusted-router/attestation";
 import {
   BrowserOAuthFlow,
@@ -153,6 +156,30 @@ const attestation: GatewayAttestation = await verifyGatewayAttestation(bytes, {
   policy, nonceHex: "0123", tlsCertDer: bytes, tlsExporter: bytes,
 });
 const certificateHash: string = attestation.certSha256;
+const bindingLevel: AttestationBinding = attestation.binding;
+// @ts-expect-error Binding levels are a closed set.
+const unknownBinding: AttestationBinding = "tls";
+const challengedDocument: Uint8Array = await client.attestation({ nonceHex: "0123" });
+const unchallengedDocument: Uint8Array = await client.attestation();
+// @ts-expect-error The challenge option is named nonceHex.
+client.attestation({ nonce: "0123" });
+const documentResult: GatewayAttestationDocument = await verifyGatewayAttestationDocument(challengedDocument, {
+  policy, nonceHex: "0123", jwks: { keys: [] }, fetchImpl: fetch,
+});
+const documentBinding: "none" = documentResult.binding;
+const documentNonce: string = documentResult.nonce;
+const documentCandidates: string[] = documentResult.certSha256Candidates;
+const documentExpiry: number = documentResult.expiresAt;
+// @ts-expect-error A document result names no certificate as the connection's.
+documentResult.certSha256;
+// @ts-expect-error A document result is never reported as TLS-bound.
+const documentAsBound: "tls-cert" = documentResult.binding;
+// @ts-expect-error Document verification requires a fresh nonce.
+verifyGatewayAttestationDocument(challengedDocument, { policy });
+// @ts-expect-error Document verification requires a policy.
+verifyGatewayAttestationDocument(challengedDocument, { nonceHex: "0123" });
+// @ts-expect-error Document verification takes no TLS evidence; use verifyGatewayAttestation.
+verifyGatewayAttestationDocument(challengedDocument, { policy, nonceHex: "0123", tlsCertDer: bytes });
 const receiptKeyVerification: Promise<void> = verifyReceiptKeyAttestation(bytes, {
   policy, keyCommitmentHex: "0123",
 });

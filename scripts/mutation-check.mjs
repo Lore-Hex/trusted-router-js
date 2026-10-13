@@ -55,6 +55,18 @@ mutation("JWT nested container", "attestation.ts",
   '  if (!isRecord(claims.submods) || !isRecord(claims.submods.container)) {\n    throw new AttestationVerificationError("JWT submods.container must be an object");\n  }\n  const submods = claims.submods.container;',
   '  const submods = ((claims.submods || {}) as Record<string, unknown>).container || {};', "attestation");
 mutation("JWT nonce array", "attestation.ts", '  if (!Array.isArray(nonces)) throw new AttestationVerificationError("JWT nonces must be a string or array");', "", "attestation");
+// Document-only attestation: each guard below is all that stands between a
+// relayed or replayed token and a passing result, so each must be load-bearing.
+mutation("document nonce floor", "attestation.ts",
+  '  if (typeof nonceHex !== "string" || !FRESH_NONCE_HEX.test(nonceHex)) {', '  if (typeof nonceHex !== "string") {',
+  "attestation-document", "document: a missing or weak nonce");
+mutation("document nonce in eat_nonce only", "attestation.ts",
+  '    if (bindingMode === "live-channel") {\n      noncePresent = hasNonce(nonces, nonceHex);',
+  '    if (bindingMode === "live-channel" || bindingMode === "document") {\n      noncePresent = hasNonce(nonces, nonceHex);',
+  "attestation-document", "document: the nonce must be in eat_nonce");
+mutation("claimed cert is not a binding", "attestation.ts",
+  '    else if (tlsCertDer) binding = "tls-cert";', '    else binding = "tls-cert";',
+  "attestation-document", "binding: a claimed certificate");
 for (const [name, before, after] of [
   ["identity", "isRecord(identity) ? identity : {}", 'identity && typeof identity === "object" ? identity : {}'],
   ["attempt", "isRecord(attempt) ? attempt : {}", 'attempt && typeof attempt === "object" ? attempt : {}'],

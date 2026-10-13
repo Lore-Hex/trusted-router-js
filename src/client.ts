@@ -782,10 +782,15 @@ export class TrustedRouter {
 
   // ---- attestation ----------------------------------------------------
 
-  /** Fetch the gateway attestation JWT as raw bytes (Uint8Array). */
-  async attestation() {
+  /**
+   * Fetch the gateway attestation JWT as raw bytes (Uint8Array). Pass
+   * `nonceHex` to have the gateway commit to your fresh challenge in
+   * `eat_nonce`; verifyGatewayAttestationDocument() requires one.
+   */
+  async attestation({ nonceHex = null }: { nonceHex?: string | null } = {}) {
     // /attestation lives at the API ROOT, not under /v1.
-    const url = this.baseUrl.replace(/\/v1$/, "") + "/attestation";
+    const url = this.baseUrl.replace(/\/v1$/, "") + "/attestation" +
+      (nonceHex === null ? "" : `?nonce=${encodeURIComponent(nonceHex)}`);
     const response = await this.fetch(url, {
       headers: { "user-agent": DEFAULT_USER_AGENT },
       credentials: "omit",

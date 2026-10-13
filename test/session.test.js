@@ -458,6 +458,7 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
     });
     assert.equal(bytesToHex(sessionA.exporter), bytesToHex(serverExporters[0]));
     assert.equal(sessionA.attestation.certSha256, certSha);
+    assert.equal(sessionA.attestation.binding, "tls-exporter");
     assert.equal(sessionA.attestation.nonce.length, EXPORTER_LENGTH * 2);
 
     // Follow-up verification is pinned to snapshots captured at the initial
@@ -484,6 +485,7 @@ test("verifyGatewaySession binds attestation to the live TLS exporter", async ()
     sessionA.exporter.set(originalExporter);
     sessionA.leafDer.set(originalLeafDer);
     assert.equal(secondAttestation.certSha256, certSha);
+    assert.equal(secondAttestation.binding, "tls-exporter");
     assert.equal(secondAttestation.nonce.length, EXPORTER_LENGTH * 2);
     assert.equal(bytesToHex(sessionA.exporter), bytesToHex(serverExporters[1]));
 

@@ -1,4 +1,5 @@
 import { isRecord, errorText } from "../internal/records.js";
+import { randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 
 import {
@@ -10,8 +11,9 @@ import {
   VERSION,
 } from "../index.js";
 import {
+  EXPORTER_LENGTH,
   policyFromTrustRelease,
-  verifyGatewayAttestation,
+  verifyGatewayAttestationDocument,
 } from "../attestation.js";
 import {
   fetchAttestationAgain,
@@ -37,7 +39,7 @@ interface CliDependencies {
   clientFactory: (options: TrustedRouterOptions) => CliClient;
   fetchAttestationAgain: typeof fetchAttestationAgain;
   policyFromTrustRelease: typeof policyFromTrustRelease;
-  verifyGatewayAttestation: typeof verifyGatewayAttestation;
+  verifyGatewayAttestationDocument: typeof verifyGatewayAttestationDocument;
   verifyGatewaySession: typeof verifyGatewaySession;
 }
 
@@ -130,13 +132,14 @@ Options:
   trust: "Usage: trustedrouter trust [--json]\n\nShow the published trust release.\n",
   attest: `Usage: trustedrouter attest [options]
 
-Without options, writes the raw UTF-8 attestation JWT. --verify verifies its
-signature and workload identity against the published trust release. --session
-performs the stronger TLS-exporter-bound G6 verification and a same-socket
-follow-up challenge.
+Without options, writes the raw UTF-8 attestation JWT. --verify sends a fresh
+nonce and verifies the document's signature, workload identity, and nonce echo
+against the published trust release; it is not bound to the TLS connection
+(binding "none"). --session performs the stronger TLS-exporter-bound G6
+verification and a same-socket follow-up challenge.
 
 Options:
-  --verify              Verify against the published trust release.
+  --verify              Verify the document against the published trust release.
   --session             Verify the TLS-exporter-bound session and follow-up.
   --connect-ip IP       With --session, dial this IP but retain SNI/Host.
   --json                Emit a machine-readable success envelope.
@@ -462,20 +465,23 @@ async function runAttest({ client, stdout, values, json, dependencies }: {
     return;
   }
 
-  const document = await client.attestation();
-  if (!values.verify) {
-    const decoded = bytesToUtf8(document);
-    if (json) writeSuccess(stdout, "attest", { document: decoded }, true);
-    else write(stdout, decoded);
+  if (values.verify) {
+    const nonceHex = randomBytes(EXPORTER_LENGTH).toString("hex");
+    const document = await client.attestation({ nonceHex });
+    const release = await client.trustRelease();
+    const policy = await dependencies.policyFromTrustRelease({ release });
+    const verified = await dependencies.verifyGatewayAttestationDocument(document, {
+      policy,
+      nonceHex,
+      fetchImpl: client.fetch,
+    });
+    writeSuccess(stdout, "attest.verify", attestationData(verified), json);
     return;
   }
-  const release = await client.trustRelease();
-  const policy = await dependencies.policyFromTrustRelease({ release });
-  const verified = await dependencies.verifyGatewayAttestation(document, {
-    policy,
-    fetchImpl: client.fetch,
-  });
-  writeSuccess(stdout, "attest.verify", attestationData(verified), json);
+
+  const decoded = bytesToUtf8(await client.attestation());
+  if (json) writeSuccess(stdout, "attest", { document: decoded }, true);
+  else write(stdout, decoded);
 }
 
 async function runCommand(parsed: ParsedCliArgs, context: CommandContext) {
@@ -521,7 +527,7 @@ function defaultDependencies(): CliDependencies {
     clientFactory: (options) => new TrustedRouter(options),
     fetchAttestationAgain,
     policyFromTrustRelease,
-    verifyGatewayAttestation,
+    verifyGatewayAttestationDocument,
     verifyGatewaySession,
   };
 }
