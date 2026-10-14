@@ -139,10 +139,10 @@ test("help, version, and no-command behavior follow the shared contract", async 
   assert.deepEqual(JSON.parse(version.stdout), {
     ok: true,
     command: "version",
-    data: { version: "0.9.0" },
+    data: { version: "0.10.0" },
   });
   const plainVersion = await invoke(["--version"], { dependencies });
-  assert.equal(plainVersion.stdout, "trustedrouter 0.9.0\n");
+  assert.equal(plainVersion.stdout, "trustedrouter 0.10.0\n");
   assert.equal(constructed, 0);
 });
 
@@ -450,37 +450,51 @@ test("raw attestation supports byte-exact plain output and a JSON envelope", asy
   });
 });
 
-test("attest --verify delegates policy and signature checks", async () => {
+test("attest --verify challenges with a fresh nonce and verifies the document", async () => {
   const calls = [];
   const verified = {
+    binding: "none",
     imageDigest: "sha256:verified",
-    certSha256: "abc",
+    certSha256Candidates: ["abc"],
     rawClaims: { dbgstat: "disabled-since-boot" },
   };
-  const result = await invoke(["attest", "--verify", "--json"], {
+  const client = fakeClient({
+    async attestation(options) {
+      calls.push(["fetch", options]);
+      return new TextEncoder().encode("header.payload.signature");
+    },
+  });
+  const verify = async () => invoke(["attest", "--verify", "--json"], {
+    client,
     dependencies: {
       async policyFromTrustRelease({ release }) {
         calls.push(["policy", release]);
         return { audience: "quill-cloud", imageDigest: "sha256:test" };
       },
-      async verifyGatewayAttestation(document, options) {
-        calls.push(["verify", new TextDecoder().decode(document), options.policy]);
+      async verifyGatewayAttestationDocument(document, options) {
+        calls.push(["verify", new TextDecoder().decode(document), options.policy, options.nonceHex]);
         return verified;
       },
     },
   });
+  const result = await verify();
   assert.equal(result.code, EXIT_SUCCESS);
   assert.deepEqual(JSON.parse(result.stdout), {
     ok: true,
     command: "attest.verify",
     data: verified,
   });
-  assert.deepEqual(calls[0], ["policy", { image_digest: "sha256:test" }]);
-  assert.deepEqual(calls[1], [
+  const nonceHex = calls[0][1].nonceHex;
+  assert.match(nonceHex, /^[0-9a-f]{64}$/);
+  assert.deepEqual(calls[1], ["policy", { image_digest: "sha256:test" }]);
+  assert.deepEqual(calls[2], [
     "verify",
     "header.payload.signature",
     { audience: "quill-cloud", imageDigest: "sha256:test" },
+    nonceHex,
   ]);
+  await verify();
+  assert.notEqual(calls[3][1].nonceHex, nonceHex, "each run must send a new nonce");
 });
 
 test("attest --session delegates G6 verification, follows up, and closes the socket", async () => {
@@ -600,7 +614,7 @@ test("Boundary audit: attestation CLI does not spread an array as a record", asy
   const result = await invoke(["attest", "--verify", "--json"], {
     dependencies: {
       async policyFromTrustRelease() { return {}; },
-      async verifyGatewayAttestation() { return Object.assign([], { rawClaims: {} }); },
+      async verifyGatewayAttestationDocument() { return Object.assign([], { rawClaims: {} }); },
     },
   });
   assert.equal(result.code, EXIT_SUCCESS);
@@ -633,7 +647,7 @@ for (const [command, method, data] of [
     for (const flag of ["--version", "-V"]) {
       const version = await invoke([command, flag, "--json"]);
       assert.equal(version.code, EXIT_SUCCESS);
-      assert.deepEqual(JSON.parse(version.stdout), { ok: true, command: "version", data: { version: "0.9.0" } });
+      assert.deepEqual(JSON.parse(version.stdout), { ok: true, command: "version", data: { version: "0.10.0" } });
       assert.deepEqual(version.clientOptions, []);
     }
     const plain = await invoke([command, ...operands], { env: API_KEY_ENV });
@@ -683,7 +697,7 @@ for (const mode of ["verify", "session"]) {
     const result = await invoke(["attest", `--${mode}`, "--json"], {
       dependencies: {
         async policyFromTrustRelease() { return {}; },
-        async verifyGatewayAttestation() { throw new Error("verification failed"); },
+        async verifyGatewayAttestationDocument() { throw new Error("verification failed"); },
         async verifyGatewaySession() { return { socket: { destroy() { destroyed += 1; } } }; },
         async fetchAttestationAgain() { throw new Error("verification failed"); },
       },

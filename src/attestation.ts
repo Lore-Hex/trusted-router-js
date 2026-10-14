@@ -7,11 +7,17 @@
  *   - the workload's container image digest (sha256:...)
  *   - the workload's image reference (Artifact Registry path:tag)
  *   - the caller-supplied `nonce` (binds the doc to this request)
- *   - the workload's TLS leaf cert SHA-256 (binds it to the
- *     connection the client is on right now)
+ *   - the workload's TLS leaf cert SHA-256, as one `eat_nonce` entry
+ *   - the TLS exporter of the session the request arrived on
  *
- * Verifying the JWT proves the gateway you're about to use is the
- * exact build the trust page advertises.
+ * Verifying the JWT proves a workload running the exact build the trust
+ * page advertises minted it. Whether it also proves *your connection*
+ * reaches that workload depends on what the caller can check, and every
+ * result reports that as `binding` (see AttestationBinding):
+ *   - verifyGatewaySession() (Node, ./session.js) binds the TLS exporter;
+ *   - verifyGatewayAttestation() with `tlsCertDer` binds the leaf cert;
+ *   - verifyGatewayAttestationDocument() binds nothing, for callers such
+ *     as browsers that cannot see the TLS connection at all.
  *
  * Uses the WebCrypto SubtleCrypto API — no native deps. Runs in
  * Node 20+ and any modern browser.
@@ -30,13 +36,69 @@ export interface AttestationPolicy {
   allowDebug?: boolean;
 }
 
+/**
+ * What a verified attestation proves about the connection the caller's
+ * requests travel over, weakest first. Every check on the token itself —
+ * Google's signature, issuer, audience, expiry, production Confidential Space
+ * claims, image pins — passes before any of these is reported.
+ *
+ *   "none"          Nothing ties the token to your connection. With a fresh
+ *                   nonce it shows a workload running a pinned build answered
+ *                   your challenge just now; it does not show that your
+ *                   requests reach that workload. Anything that can reach the
+ *                   gateway (a proxy, a relay, a TLS-terminating middlebox)
+ *                   can obtain such a token for your nonce and still serve
+ *                   your traffic itself.
+ *   "tls-cert"      You supplied the DER leaf certificate of your own TLS
+ *                   connection, and the token commits to its SHA-256. A relay
+ *                   that terminates TLS presents a different certificate
+ *                   unless it holds the gateway's key.
+ *   "tls-exporter"  The token commits to the RFC 9266 exporter of your own TLS
+ *                   session, so it was minted inside that session.
+ */
+export type AttestationBinding = "none" | "tls-cert" | "tls-exporter";
+
 export interface GatewayAttestation {
+  /**
+   * How the token was tied to the caller's connection. "none" means
+   * `certSha256` is only what the token claims; nothing compared it with a
+   * connection.
+   */
+  binding: AttestationBinding;
   certSha256: string;
   imageDigest: string;
   imageReference: string;
   nonce: string | null;
   expiresAt: number | null;
   issuer: string | null;
+  audience: string;
+  rawClaims: Record<string, unknown>;
+}
+
+/**
+ * Result of verifyGatewayAttestationDocument(). It has no `certSha256`: the
+ * document names no certificate as the connection's, so code written against
+ * GatewayAttestation that reads one fails to compile rather than trusting it.
+ */
+export interface GatewayAttestationDocument {
+  /** Always "none": document verification checks no TLS evidence. */
+  binding: "none";
+  /**
+   * SHA-256-shaped values the token commits to, other than your nonce:
+   * labelled certificate claims when present, then `eat_nonce` entries.
+   * The gateway's TLS leaf certificate hash is among them, alongside other
+   * per-instance or per-connection commitments, so test membership rather
+   * than picking an entry. A match is a comparison you make, not a binding
+   * this SDK checked; when you hold the certificate, pass it to
+   * verifyGatewayAttestation() as `tlsCertDer` instead.
+   */
+  certSha256Candidates: string[];
+  imageDigest: string;
+  imageReference: string;
+  /** The fresh nonce you supplied, found in the token's `eat_nonce`. */
+  nonce: string;
+  expiresAt: number;
+  issuer: string;
   audience: string;
   rawClaims: Record<string, unknown>;
 }
@@ -67,6 +129,12 @@ interface VerifyGatewayAttestationOptions extends JwtVerificationOptions {
   tlsExporter?: Uint8Array | null;
 }
 
+interface VerifyGatewayAttestationDocumentOptions extends JwtVerificationOptions {
+  policy: AttestationPolicy;
+  /** 16 to 64 fresh random bytes as hex, sent as `/attestation?nonce=`. */
+  nonceHex: string;
+}
+
 interface VerifyReceiptKeyAttestationOptions extends JwtVerificationOptions {
   policy: AttestationPolicy;
   keyCommitmentHex: string;
@@ -77,7 +145,15 @@ interface CheckClaimsOptions {
   nonceHex: string | null;
   tlsCertDer: Uint8Array | null;
   tlsExporter: Uint8Array | null;
-  bindingMode?: "live-channel" | "receipt-key";
+  // "document" checks the token alone: no TLS evidence, and the nonce (or
+  // receipt-key commitment) must be in eat_nonce itself.
+  bindingMode?: "live-channel" | "document";
+}
+
+// checkClaims validates both before returning, so they are never null here.
+interface CheckedClaims extends GatewayAttestation {
+  expiresAt: number;
+  issuer: string;
 }
 
 export const GCP_ISSUER = "https://confidentialcomputing.googleapis.com";
@@ -185,8 +261,15 @@ export async function policyFromTrustRelease({
  *   tlsExporter    Uint8Array — RFC 9266 exporter from the same TLS session
  *   jwks           pre-fetched Google JWKS (optional; will fetch if absent)
  *
- * Returns a GatewayAttestation object on success. Throws
- * AttestationVerificationError on any failure — never returns false.
+ * The token must commit to a TLS certificate hash. Live gateway tokens carry
+ * it only as an `eat_nonce` entry, which is found by hashing `tlsCertDer`, so
+ * without the certificate this throws. A caller that cannot see its TLS
+ * connection uses verifyGatewayAttestationDocument() instead and gets
+ * `binding: "none"` rather than a cert binding it never checked.
+ *
+ * Returns a GatewayAttestation object on success; `binding` reports which
+ * connection evidence was checked. Throws AttestationVerificationError on any
+ * failure — never returns false.
  */
 export function verifyGatewayAttestation(
   document: Uint8Array | string,
@@ -212,6 +295,72 @@ export async function verifyGatewayAttestation(document: Uint8Array | string, {
     tlsExporter,
     bindingMode: "live-channel",
   });
+}
+
+/**
+ * Verify a gateway attestation document on its own, with no TLS binding.
+ *
+ * For callers that cannot see the TLS connection their requests use:
+ * browsers, and anything behind a fetch proxy or a platform HTTP stack. It
+ * runs every check verifyGatewayAttestation() runs on the token — Google's
+ * signature, issuer, audience, expiry, production Confidential Space claims,
+ * and the policy's image pins — and requires `nonceHex` in `eat_nonce`, so the
+ * token was minted for this challenge rather than replayed.
+ *
+ * It checks no TLS certificate or exporter, and the result says so with
+ * `binding: "none"`. A verified document shows that a workload running a
+ * pinned build answered your challenge; it does not show that your other
+ * requests reach that workload. Because nothing here trusts the transport, the
+ * document may be fetched through a relay without weakening the result; the
+ * JWKS and the policy must not come from that relay.
+ *
+ *   document   Uint8Array | string — the JWT from `/attestation?nonce=...`
+ *   policy     from policyFromTrustRelease(); must pin an image
+ *   nonceHex   16 to 64 fresh random bytes as hex, sent with that request
+ *   jwks       pre-fetched Google JWKS (optional; will fetch if absent)
+ *
+ * Throws AttestationVerificationError on any failure — never returns false.
+ */
+export function verifyGatewayAttestationDocument(
+  document: Uint8Array | string,
+  opts: VerifyGatewayAttestationDocumentOptions,
+): Promise<GatewayAttestationDocument>;
+export async function verifyGatewayAttestationDocument(document: Uint8Array | string, {
+  policy,
+  nonceHex,
+  jwks = null,
+  jwksUrl = GCP_JWKS_URI,
+  fetchImpl = globalThis.fetch,
+}: Partial<VerifyGatewayAttestationDocumentOptions> = {}): Promise<GatewayAttestationDocument> {
+  if (!policy) {
+    throw new AttestationVerificationError("policy is required");
+  }
+  // Freshness is the only thing tying a document to this moment, so a missing,
+  // short, or non-hex challenge is refused before any network or crypto work.
+  if (typeof nonceHex !== "string" || !FRESH_NONCE_HEX.test(nonceHex)) {
+    throw new AttestationVerificationError(
+      "document verification requires a fresh nonce of 16 to 64 random bytes as hex",
+    );
+  }
+  const payload = await verifiedJwtClaims(document, { jwks, jwksUrl, fetchImpl });
+  const verified = await checkClaims(payload, {
+    policy,
+    nonceHex,
+    tlsCertDer: null,
+    tlsExporter: null,
+    bindingMode: "document",
+  });
+  return {
+    binding: "none",
+    certSha256Candidates: certSha256Candidates(payload, nonceHex),
+    imageDigest: verified.imageDigest,
+    imageReference: verified.imageReference,
+    nonce: nonceHex,
+    expiresAt: verified.expiresAt,
+    issuer: verified.issuer,
+    audience: verified.audience,
+    rawClaims: verified.rawClaims,
+  };
 }
 
 /**
@@ -247,7 +396,7 @@ export async function verifyReceiptKeyAttestation(document: Uint8Array | string,
     nonceHex: keyCommitmentHex,
     tlsCertDer: null,
     tlsExporter: null,
-    bindingMode: "receipt-key",
+    bindingMode: "document",
   });
 }
 
@@ -263,6 +412,10 @@ const IMAGE_REFERENCE = new RegExp(
   IMAGE_PATH_COMPONENT + "(?:/" + IMAGE_PATH_COMPONENT + ")*" +
   "(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$",
 );
+// 16 bytes is the least a caller-chosen challenge should carry. The upper
+// bound only keeps input sane; the gateway enforces its own, lower, limit.
+const FRESH_NONCE_HEX = /^(?:[0-9a-fA-F]{2}){16,64}$/;
+const SHA256_HEX = /^[0-9a-fA-F]{64}$/;
 
 function readImagePin(value: unknown, field: string, pattern: RegExp): string {
   if (typeof value !== "string" || !pattern.test(value)) {
@@ -407,8 +560,8 @@ async function checkClaims(claims: Record<string, unknown>, {
   tlsCertDer,
   tlsExporter,
   bindingMode = "live-channel",
-}: CheckClaimsOptions): Promise<GatewayAttestation> {
-  if (bindingMode !== "live-channel" && bindingMode !== "receipt-key") {
+}: CheckClaimsOptions): Promise<CheckedClaims> {
+  if (bindingMode !== "live-channel" && bindingMode !== "document") {
     throw new AttestationVerificationError(
       `unsupported attestation binding mode ${JSON.stringify(bindingMode)}`,
     );
@@ -508,13 +661,12 @@ async function checkClaims(claims: Record<string, unknown>, {
   let nonceMatch = null;
   if (nonceHex !== null) {
     let noncePresent;
-    if (bindingMode === "receipt-key") {
-      const receiptNonces = typeof eatNonces === "string"
-        ? [eatNonces]
-        : (Array.isArray(eatNonces) ? eatNonces : []);
-      noncePresent = hasNonce(receiptNonces, nonceHex);
-    } else {
+    if (bindingMode === "live-channel") {
       noncePresent = hasNonce(nonces, nonceHex);
+    } else {
+      // Receipt-key commitments and document challenges must appear in
+      // eat_nonce itself, never only in the legacy `nonces` fallback.
+      noncePresent = hasNonce(eatNonceList(claims), nonceHex);
     }
     if (!noncePresent) {
       throw new AttestationVerificationError(
@@ -547,6 +699,7 @@ async function checkClaims(claims: Record<string, unknown>, {
   }
 
   let certSha;
+  let binding: AttestationBinding = "none";
   if (bindingMode === "live-channel") {
     // Cert binding
     certSha = claims.tls_cert_sha256
@@ -554,7 +707,11 @@ async function checkClaims(claims: Record<string, unknown>, {
       || (tlsCertDer ? findCertInNonces(nonces, await sha256Hex(tlsCertDer)) : null);
     if (typeof certSha !== "string" || certSha.length !== 64) {
       throw new AttestationVerificationError(
-        "JWT does not commit to a TLS cert SHA-256 — cannot bind connection",
+        "JWT does not commit to a TLS cert SHA-256 — cannot bind connection" +
+        (tlsCertDer
+          ? ""
+          : "; pass tlsCertDer from this connection, or use " +
+            "verifyGatewayAttestationDocument() for document-only verification"),
       );
     }
     certSha = certSha.toLowerCase();
@@ -573,13 +730,20 @@ async function checkClaims(claims: Record<string, unknown>, {
         "JWT-committed cert SHA-256 doesn't match policy pin",
       );
     }
+
+    // A policy pin compares the token with a published hash, not with this
+    // connection, so it does not raise the binding on its own.
+    if (tlsExporter !== null) binding = "tls-exporter";
+    else if (tlsCertDer) binding = "tls-cert";
   } else {
-    // A receipt attestation certifies a durable signing key. It is not
-    // evidence about the verifier's current TLS connection.
+    // A receipt attestation certifies a durable signing key, and a document
+    // check has no connection to compare. Neither is evidence about the
+    // verifier's current TLS connection.
     certSha = "";
   }
 
   return {
+    binding,
     certSha256: certSha,
     imageDigest,
     imageReference,
@@ -589,6 +753,25 @@ async function checkClaims(claims: Record<string, unknown>, {
     audience: policy.audience,
     rawClaims: claims,
   };
+}
+
+function eatNonceList(claims: Record<string, unknown>): unknown[] {
+  const eatNonces = claims.eat_nonce;
+  if (typeof eatNonces === "string") return [eatNonces];
+  if (!Array.isArray(eatNonces)) return [];
+  const values: unknown[] = eatNonces;
+  return values;
+}
+
+function certSha256Candidates(claims: Record<string, unknown>, nonceHex: string) {
+  const nonce = nonceHex.toLowerCase();
+  const candidates: string[] = [];
+  for (const value of [claims.tls_cert_sha256, claims.workload_tls_cert_sha256, ...eatNonceList(claims)]) {
+    if (typeof value !== "string" || !SHA256_HEX.test(value)) continue;
+    const hex = value.toLowerCase();
+    if (hex !== nonce && !candidates.includes(hex)) candidates.push(hex);
+  }
+  return candidates;
 }
 
 function findCertInNonces(nonces: Iterable<unknown>, certHex: string) {

@@ -64,10 +64,11 @@ Every non-streaming command success in `--json` mode has the stable shape
 `0` success, `1` API/runtime failure, `2` usage/input error, and `3`
 authentication/permission failure.
 
-`attest --verify` checks the document signature and workload identity against
-the published trust release. `attest --session` additionally binds the check
-to the live connection's nonce and TLS exporter and runs a same-socket
-follow-up challenge.
+`attest --verify` sends a fresh nonce and checks the document's signature,
+workload identity, and nonce echo against the published trust release; like
+`verifyGatewayAttestationDocument()`, it reports `binding: "none"`.
+`attest --session` additionally binds the check to the live connection's TLS
+exporter and runs a same-socket follow-up challenge.
 
 The CLI reads `TRUSTEDROUTER_API_KEY` (or the legacy `TR_API_KEY`) and never
 accepts a bearer as a command-line argument, where it could leak through shell
@@ -156,6 +157,7 @@ import {
 } from "@lore-hex/trusted-router/session";
 ```
 
+`session.attestation` and every follow-up report `binding: "tls-exporter"`.
 `fetchAttestationAgain(session)` re-fetches and verifies the document over the
 already-pinned socket and returns a verified `GatewayAttestation`. This is a
 return-type change from the earlier raw `Uint8Array`; an HTTP 200 alone is no
@@ -410,35 +412,87 @@ await client.billingCheckout({
 
 Every TrustedRouter response is generated inside a Google Confidential Space
 workload. The gateway's `/attestation` endpoint mints a Google-signed JWT
-that commits to the workload image digest, image reference, your nonce, and
-the TLS leaf cert SHA-256. Verifying it proves the prompt path you're about
-to use is the exact build the trust page advertises:
+that commits to the workload image digest, image reference, your nonce, the
+TLS leaf cert SHA-256, and the TLS exporter of the session that asked for it.
+Verifying it proves the token came from the exact build the trust page
+advertises. How much it proves about *your connection* depends on what you can
+check, and every result says which with `binding`:
+
+| `binding` | Verifier | What a pass adds to the token checks |
+|---|---|---|
+| `"tls-exporter"` | `verifyGatewaySession()` from `/session` (Node) | The token was minted inside your own TLS session, and that pinned socket is returned for your requests. |
+| `"tls-cert"` | `verifyGatewayAttestation()` with `tlsCertDer` | The token commits to the certificate your connection presented. |
+| `"none"` | `verifyGatewayAttestationDocument()` | Nothing about your connection. With your fresh nonce, a pinned build answered just now. |
+
+The token checks are the same in all three: Google's RS256 signature, issuer,
+audience, expiry, production Confidential Space claims (debug off, Secure
+Boot, confidential hardware), and the image digest/reference pins from the
+trust release.
+
+Where you can see the connection, prefer the session check above (see
+[Node TLS session verification](#node-tls-session-verification)). Everywhere
+else, verify the document:
 
 ```js
 import { TrustedRouter } from "@lore-hex/trusted-router";
 import {
-  verifyGatewayAttestation, policyFromTrustRelease,
+  policyFromTrustRelease,
+  verifyGatewayAttestationDocument,
 } from "@lore-hex/trusted-router/attestation";
 
-const client = new TrustedRouter({ apiKey: "sk-tr-v1-..." });
-const policy = await policyFromTrustRelease();   // pulls live trust release
+const client = new TrustedRouter();
+const policy = await policyFromTrustRelease();    // pulls live trust release
 
-const nonce = crypto.randomUUID().replace(/-/g, "");
-const jwt = await client.attestation();           // raw JWT bytes (Uint8Array)
+const nonceHex = Array.from(crypto.getRandomValues(new Uint8Array(32)),
+  (b) => b.toString(16).padStart(2, "0")).join("");
+const jwt = await client.attestation({ nonceHex }); // GET /attestation?nonce=...
 
-const attestation = await verifyGatewayAttestation(jwt, {
-  policy,
-  nonceHex: nonce,
-  // Optionally pass the live TLS cert DER bytes for extra binding.
-});
+const attestation = await verifyGatewayAttestationDocument(jwt, { policy, nonceHex });
 
-console.log("verified gateway:", attestation.imageDigest);
+console.log(attestation.binding);      // "none"
+console.log(attestation.imageDigest);  // a digest the trust release pins
 ```
 
-`verifyGatewayAttestation()` throws `AttestationVerificationError` on any
-failure — bad signature, expired JWT, wrong issuer, audience mismatch,
-image_digest mismatch, image_reference mismatch, missing nonce echo, or
-TLS cert mismatch. Never returns falsey for a failed verification.
+`verifyGatewayAttestationDocument()` requires a fresh nonce of 16 to 64
+random bytes (as hex) and requires it in the token's `eat_nonce`, so a stored
+token cannot be replayed at you. Its result has no `certSha256`: the token
+names no certificate as your connection's. `certSha256Candidates` lists the
+SHA-256-shaped values the token commits to besides your nonce; the gateway's
+leaf certificate hash is one of them. If you hold the DER certificate of your
+connection, pass it to `verifyGatewayAttestation(jwt, { policy, nonceHex,
+tlsCertDer })` instead, which checks it and reports `binding: "tls-cert"`.
+
+`verifyGatewayAttestation()` keeps its behaviour: it requires a certificate
+binding, and because live tokens carry the certificate hash only as an
+`eat_nonce` entry, it throws without `tlsCertDer`, naming the document-only
+verifier in the error.
+
+Both throw `AttestationVerificationError` on any failure — bad signature,
+expired JWT, wrong issuer, audience mismatch, image_digest mismatch,
+image_reference mismatch, missing nonce echo, or TLS cert mismatch. Neither
+returns falsey for a failed verification.
+
+### In the browser
+
+A browser cannot read the TLS certificate or exporter of its connections, so
+`verifyGatewayAttestationDocument()` is the check available there. It uses
+only `fetch` and WebCrypto.
+
+The gateway does not send CORS headers on `/attestation`, so a page on another
+origin fetches the document through its own relay. That does not weaken the
+check: a relay can pass a token along, but it cannot forge one, answer your
+fresh nonce with an old one, or change what the token is checked against, as
+long as Google's JWKS and the trust release are fetched directly (both serve
+CORS) and never through the relay.
+[`examples/verify-attestation-browser.mjs`](examples/verify-attestation-browser.mjs)
+does exactly that.
+
+Be precise about what a pass means there. It shows that the gateway is
+serving a published build right now. It does not show that any particular
+request from the page reached that gateway — especially when requests also
+travel through your relay — and it says nothing about the model providers the
+gateway routes to. Verify again for each session, and never rely on a result
+past its `expiresAt`.
 
 ## Receipt verification
 

@@ -3,8 +3,8 @@
 import {
   fetchAttestationAgain,
   verifyGatewaySession,
-} from "../src/session.js";
-import { policyFromTrustRelease } from "../src/attestation.js";
+} from "@lore-hex/trusted-router/session";
+import { policyFromTrustRelease } from "@lore-hex/trusted-router/attestation";
 
 function argValue(name) {
   const prefix = `${name}=`;
@@ -36,13 +36,14 @@ async function main() {
   const session = await verifyGatewaySession({ baseUrl, policy });
   try {
     console.log("JWT: verified");
+    console.log(`binding: ${session.attestation.binding}`);
     console.log(`digest: ${session.attestation.imageDigest || "(not pinned)"}`);
     console.log(`cert-fp: ${session.attestation.certSha256}`);
     console.log(`fresh-nonce: ${session.attestation.nonce}`);
     console.log(`exporter: ${hex(session.exporter)}`);
     console.log(`dbgstat: ${JSON.stringify(session.attestation.rawClaims.dbgstat ?? null)}`);
     const again = await fetchAttestationAgain(session);
-    console.log(`pin-follow-up: ${again.length} byte JWT over same socket`);
+    console.log(`pin-follow-up: verified over same socket (binding: ${again.binding})`);
   } finally {
     session.socket.destroy();
   }
