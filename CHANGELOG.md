@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.1 — 2026-10-15
+
+### Fixed
+
+- Browsers: `policyFromTrustRelease()`, `fetchTrustRelease()`,
+  `client.trustRelease()`, `client.status()`, and `client.attestation()` no
+  longer send a `user-agent` header outside Node. It is not a CORS-safelisted
+  request header, so browsers that honour it (Firefox, Safari) preflighted
+  the GET, and trust.trustedrouter.com (GitHub Pages) answers every `OPTIONS`
+  with 405, so the trust release could not be fetched cross-origin. These
+  GETs now carry no headers in a browser or worker; Node and Node-compatible
+  runtimes still send the SDK `user-agent`.
+- Browsers: every `TrustedRouter` method failed with "Illegal invocation"
+  (Chrome) or "'fetch' called on an object that does not implement interface
+  Window" (Firefox) unless a bound `fetchImpl` was passed, because the
+  native fetch was called as a method of the client. The client now calls
+  `fetchImpl` as a plain function.
+
 ## 0.10.0 — 2026-10-15
 
 ### Added

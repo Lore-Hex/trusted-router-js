@@ -1,6 +1,6 @@
 {
   "name": "@lore-hex/trusted-router",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "JavaScript SDK and CLI for TrustedRouter \u2014 typed errors, retries, failover, and attestation verification.",
   "type": "module",
   "main": "dist/index.js",

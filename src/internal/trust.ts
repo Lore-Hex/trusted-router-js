@@ -15,7 +15,7 @@
 import { requireRecord } from "./records.js";
 import { jsonOrThrow } from "./errors.js";
 import { DEFAULT_TRUST_RELEASE_URL } from "./models.js";
-import { DEFAULT_USER_AGENT } from "./transport.js";
+import { metadataGetHeaders } from "./transport.js";
 
 export { DEFAULT_TRUST_RELEASE_URL };
 
@@ -28,7 +28,7 @@ export async function fetchTrustRelease({
   }
   return requireRecord(await jsonOrThrow(
     await fetchImpl(trustUrl, {
-      headers: { "user-agent": DEFAULT_USER_AGENT },
+      headers: metadataGetHeaders(),
       credentials: "omit",
       redirect: "manual",
     }),
