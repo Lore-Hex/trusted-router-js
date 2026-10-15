@@ -383,19 +383,39 @@ export async function rankRegionalBaseUrls(ctx: Pick<TransportContext, "fetch" |
 
 // ---- L4: attempt assembly -------------------------------------------------
 
+/** The Node version when running on Node or a Node-compatible runtime, else null. */
+function nodeVersion(): string | null {
+  return typeof process !== "undefined" && typeof process.versions?.node === "string"
+    ? process.versions.node
+    : null;
+}
+
 export function userAgent() {
   // Exactly the grammar the enclave parses (client telemetry contract v1):
   // trusted-router-js/SEMVER with an optional runtime/version token. The old
   // trailing platform word made the whole value unparseable server-side, so
   // the SDK was invisible in the reliability data.
-  const runtime =
-    typeof process !== "undefined" && process.versions?.node
-      ? ` node/${process.versions.node}`
-      : "";
+  const node = nodeVersion();
+  const runtime = node ? ` node/${node}` : "";
   return `trusted-router-js/${VERSION}${runtime}`;
 }
 
 export const DEFAULT_USER_AGENT = userAgent();
+
+/**
+ * Headers for the SDK's single-shot, credential-free metadata GETs: the trust
+ * release, status, and attestation documents.
+ *
+ * Outside Node these GETs carry no headers, so in a browser or worker they
+ * stay CORS "simple" requests. `user-agent` is not a CORS-safelisted request
+ * header: setting it makes the browser send an OPTIONS preflight first, and
+ * trust.trustedrouter.com (GitHub Pages, which allows CORS on GET) answers
+ * every OPTIONS with 405, so the fetch fails. Node and Node-compatible
+ * runtimes apply no CORS and keep sending the SDK identity.
+ */
+export function metadataGetHeaders(): Record<string, string> {
+  return nodeVersion() === null ? {} : { "user-agent": DEFAULT_USER_AGENT };
+}
 
 export function newIdempotencyKey() {
   if (globalThis.crypto?.randomUUID) {

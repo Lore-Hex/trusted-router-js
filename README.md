@@ -487,6 +487,12 @@ CORS) and never through the relay.
 [`examples/verify-attestation-browser.mjs`](examples/verify-attestation-browser.mjs)
 does exactly that.
 
+`policyFromTrustRelease()` can fetch the trust release itself from a page on
+any origin. Outside Node, the SDK's trust release, status, and attestation
+GETs carry no request headers, so they stay CORS simple requests; a
+preflighted request would fail, because the trust release host answers
+`OPTIONS` with 405.
+
 Be precise about what a pass means there. It shows that the gateway is
 serving a published build right now. It does not show that any particular
 request from the page reached that gateway — especially when requests also

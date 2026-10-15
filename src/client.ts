@@ -45,8 +45,8 @@ import {
 import { collectCompletion, iterSseChunks, iterSseEvents } from "./internal/sse.js";
 import { resolveTelemetryEnabled } from "./internal/telemetry.js";
 import {
-  DEFAULT_USER_AGENT,
   baseUrls as inferenceBaseUrls,
+  metadataGetHeaders,
   newIdempotencyKey,
   parseRetryAfter,
   requestJson,
@@ -155,7 +155,10 @@ export class TrustedRouter {
       "",
     );
     this.workspaceId = workspaceId;
-    this.fetch = fetchImpl;
+    // Call fetchImpl as a plain function, never as a method of this client:
+    // a browser's native fetch throws "Illegal invocation" when its receiver
+    // is not the global object.
+    this.fetch = (input, init) => fetchImpl(input, init);
     this.defaultHeaders = headers;
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
     this.regionalFailover =
@@ -637,7 +640,7 @@ export class TrustedRouter {
   async status(url: string = DEFAULT_STATUS_URL): Promise<Record<string, unknown>> {
     return requireRecord(await jsonOrThrow(
       await this.fetch(url, {
-        headers: { "user-agent": DEFAULT_USER_AGENT },
+        headers: metadataGetHeaders(),
         credentials: "omit",
         redirect: "manual",
       }),
@@ -792,7 +795,7 @@ export class TrustedRouter {
     const url = this.baseUrl.replace(/\/v1$/, "") + "/attestation" +
       (nonceHex === null ? "" : `?nonce=${encodeURIComponent(nonceHex)}`);
     const response = await this.fetch(url, {
-      headers: { "user-agent": DEFAULT_USER_AGENT },
+      headers: metadataGetHeaders(),
       credentials: "omit",
       redirect: "manual",
     });

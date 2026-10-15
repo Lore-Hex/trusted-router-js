@@ -67,6 +67,15 @@ mutation("document nonce in eat_nonce only", "attestation.ts",
 mutation("claimed cert is not a binding", "attestation.ts",
   '    else if (tlsCertDer) binding = "tls-cert";', '    else binding = "tls-cert";',
   "attestation-document", "binding: a claimed certificate");
+// Browser metadata GETs: a non-safelisted header makes the browser preflight,
+// and trust.trustedrouter.com answers every OPTIONS with 405.
+mutation("metadata GETs stay CORS-simple outside Node", "internal/transport.ts",
+  '  return nodeVersion() === null ? {} : { "user-agent": DEFAULT_USER_AGENT };',
+  '  return { "user-agent": DEFAULT_USER_AGENT };',
+  "metadata-cors", "browser: trust release");
+mutation("client fetch has no receiver", "client.ts",
+  "    this.fetch = (input, init) => fetchImpl(input, init);", "    this.fetch = fetchImpl;",
+  "metadata-cors", "browser: the client calls fetchImpl");
 for (const [name, before, after] of [
   ["identity", "isRecord(identity) ? identity : {}", 'identity && typeof identity === "object" ? identity : {}'],
   ["attempt", "isRecord(attempt) ? attempt : {}", 'attempt && typeof attempt === "object" ? attempt : {}'],
