@@ -111,7 +111,8 @@ export function checkSourceMutation(c) {
   try {
     writeFileSync(c.file, mutant);
     compile(c.file);
-    const run = spawnSync(process.execPath, ["--test", `--test-name-pattern=${c.pattern}`, c.test], { encoding: "utf8" });
+    // Parse a stable format instead of Node's version/terminal-dependent default.
+    const run = spawnSync(process.execPath, ["--test", "--test-reporter=tap", `--test-name-pattern=${c.pattern}`, c.test], { encoding: "utf8" });
     const failed = /\nnot ok /m.test(run.stdout);
     const killed = run.status !== 0 && failed;
     const failures = [...run.stdout.matchAll(/^not ok \d+ - (.+)$/gm)].map((m) => m[1]);
