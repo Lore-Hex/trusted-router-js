@@ -84,6 +84,7 @@ import {
 // The context is the facade's live state; narrower helpers require only the
 // fields they read. Keep the runtime dependency cycle with errors unchanged.
 import type { BodySettlement, StreamLifecycle, TelemetrySink } from "./telemetry.js";
+import { needsVerifiedInference } from "./verified-inference.js";
 
 export type HeaderSource = HeadersInit | Record<string, unknown> | null | undefined;
 interface HeaderOptions {
@@ -95,6 +96,7 @@ interface HeaderOptions {
   credentialFree?: boolean;
 }
 export interface TransportContext {
+  gatewayPolicy?: import("../attestation.js").AttestationPolicy;
   fetch: typeof globalThis.fetch;
   defaultHeaders: HeadersInit;
   apiKey: string | null;
@@ -771,6 +773,9 @@ export async function performRequest(ctx: TransportContext, method: string, path
   } = init;
 
   const isInferenceRequest = _baseUrls === null;
+  if (isInferenceRequest && !ctx.gatewayPolicy && needsVerifiedInference(ctx.baseUrl, body)) {
+    throw new Error("Private inference requires an image-pinned gatewayPolicy.");
+  }
   // Is this rejection the caller cancelling, rather than a fact about the
   // host? Decided CAUSALLY, not by the signal's state at catch time: the
   // rejection must BE the caller's abort reason. `error.name` alone cannot
@@ -943,7 +948,9 @@ export async function performRequest(ctx: TransportContext, method: string, path
       };
       if (operation.signal) fetchInit.signal = operation.signal;
       if (_credentialFree) fetchInit.credentials = "omit";
-      response = await ctx.fetch(url, fetchInit);
+      response = isInferenceRequest && ctx.gatewayPolicy
+        ? await (await import("./verified-inference.js")).verifiedInference(url, fetchInit, ctx.gatewayPolicy)
+        : await ctx.fetch(url, fetchInit);
     } catch (error) {
       // A caller cancellation is terminal and is NOT a fact about the host:
       // recording one would put a false po=/pc=/ph= claim on the wire and burn

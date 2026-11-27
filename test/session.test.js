@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createServer } from "node:tls";
 import test from "node:test";
+import { createServer as createHttpsServer } from "node:https";
+import { verifiedInference } from "../dist/internal/verified-inference.js";
 
 import {
   fetchAttestationAgain,
@@ -203,6 +205,42 @@ function readExactly(socket, byteLength, timeoutMs = 5_000) {
     socket.resume();
   });
 }
+
+test("verified inference sends the POST only on the verified socket", async () => {
+  const keyPair = await genKeypair();
+  const jwks = {keys:[await publicJwk(keyPair)]};
+  const certSha = createHash("sha256").update(pemToDer(TEST_CERT)).digest("hex");
+  const imageDigest = "sha256:" + "a".repeat(64);
+  const policy = {audience:"quill-cloud", imageDigest, imageReference:"localhost/test:session"};
+  const verified = new WeakSet();
+  let posts = 0;
+  const server = createHttpsServer({key:TEST_KEY, cert:TEST_CERT, minVersion:"TLSv1.3"}, async (req,res) => {
+    if (req.method === "GET" && req.url.startsWith("/attestation?")) {
+      assert.equal(req.headers.authorization, undefined);
+      const token = await makeAttestationBody(keyPair, {certSha, imageDigest,
+        exporter:req.socket.exportKeyingMaterial(EXPORTER_LENGTH,EXPORTER_LABEL),
+        nonce:new URL(req.url,"https://localhost").searchParams.get("nonce")});
+      verified.add(req.socket);
+      res.writeHead(200, {"Content-Length":token.length}); res.end(token); return;
+    }
+    assert.equal(req.method,"POST");
+    assert.equal(req.headers.authorization,"Bearer synthetic");
+    assert.ok(verified.has(req.socket));
+    posts++; res.end("ok");
+  });
+  await listen(server);
+  const url = `https://localhost:${server.address().port}/v1/chat/completions`;
+  const verify = opts => verifyGatewaySession({...opts,jwks,ca:TEST_CERT,connectIp:"127.0.0.1"});
+  const init = {method:"POST",headers:{authorization:"Bearer synthetic"},body:"{}"};
+  try {
+    assert.equal(await (await verifiedInference(url,init,policy,verify)).text(),"ok");
+    await assert.rejects(verifiedInference(url,init,{...policy,imageDigest:"sha256:"+"b".repeat(64)},verify),/digest/i);
+    assert.equal(posts,1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
 
 test("verifyGatewaySession rejects an untrusted TLS certificate even when Node TLS verification is disabled globally", async () => {
   const certDer = pemToDer(TEST_CERT);

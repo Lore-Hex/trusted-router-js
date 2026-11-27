@@ -232,6 +232,8 @@ export type TrustedRouterHeaders = HeadersInit;
 export type TrustedRouterFetch = typeof fetch;
 
 export interface TrustedRouterOptions {
+  /** Require GCP gateway verification on the inference TLS connection (Node). */
+  gatewayPolicy?: import("./attestation.js").AttestationPolicy;
   apiKey?: string | null;
   baseUrl?: string | null;
   controlBaseUrl?: string | null;
