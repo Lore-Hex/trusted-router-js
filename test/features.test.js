@@ -526,7 +526,7 @@ test("embeddings: only sends provided optional fields", async () => {
     sessionId: "matter_456",
     trace: { source: "eval" },
     tags: { team: "legal" },
-    provider: ProviderPreferences.confidential(),
+    provider: ProviderPreferences.zdr(),
   });
   assert.deepEqual(bodies[0], { model: "text-embed", input: "hello" });
   assert.deepEqual(bodies[1], {
@@ -538,8 +538,10 @@ test("embeddings: only sends provided optional fields", async () => {
     session_id: "matter_456",
     trace: { source: "eval" },
     tags: { team: "legal" },
-    provider: { min_privacy: "confidential", data_collection: "deny" },
+    provider: { min_privacy: "zdr", data_collection: "deny" },
   });
+  await assert.rejects(c.embeddings({model:"text-embed", input:"private fixture", provider:ProviderPreferences.confidential()}), /gatewayPolicy/);
+  assert.equal(bodies.length, 2, "private input must not reach fetchImpl without an attestation policy");
 });
 
 test("embeddings: hosted 501 maps to EndpointNotSupportedError", async () => {

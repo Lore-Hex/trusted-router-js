@@ -105,6 +105,7 @@ export class TrustedRouter {
   declare regionAffinityPending: boolean;
   declare regionAffinityPromise: Promise<string[]> | null;
   declare telemetryEnabled: boolean;
+  declare gatewayPolicy?: import("./attestation.js").AttestationPolicy;
   declare telemetrySampleRate: number;
   declare private _telemetrySink: ClientTelemetrySink | null;
   declare private _ownsTelemetryReporter: boolean;
@@ -124,6 +125,7 @@ export class TrustedRouter {
     regionProbeTimeout = DEFAULT_REGION_PROBE_TIMEOUT_MS,
     failoverRegions = null,
     telemetry = null,
+    gatewayPolicy,
     telemetrySampleRate = 0.01,
     _telemetrySink = null,
   }: InternalClientOptions = {}) {
@@ -159,6 +161,7 @@ export class TrustedRouter {
     // a browser's native fetch throws "Illegal invocation" when its receiver
     // is not the global object.
     this.fetch = (input, init) => fetchImpl(input, init);
+    if (gatewayPolicy) this.gatewayPolicy = structuredClone(gatewayPolicy);
     this.defaultHeaders = headers;
     this.maxRetries = Math.max(0, Number.isFinite(maxRetries) ? maxRetries : 0);
     this.regionalFailover =

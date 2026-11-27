@@ -410,6 +410,13 @@ await client.billingCheckout({
 
 ## Attestation verification (the differentiator)
 
+For private chat in Node, pass an independently trusted, non-debug GCP image
+policy as `gatewayPolicy` to the client constructor. Normal inference methods
+then verify the TLS socket before sending the API key or body. Every retry
+uses a newly verified connection. A private alias, hostname or explicit
+Confidential/Trusted floor without a policy is refused. Browsers cannot use
+this Node TLS verifier; unsupported evidence is never retried over plain HTTPS.
+
 Every TrustedRouter response is generated inside a Google Confidential Space
 workload. The gateway's `/attestation` endpoint mints a Google-signed JWT
 that commits to the workload image digest, image reference, your nonce, the
