@@ -1,11 +1,6 @@
 name: Release to npm
 
-# Triggered when a `vX.Y.Z` tag is pushed. Publishes with a granular
-# automation token (repo secret NPM_TOKEN) for auth; --provenance still
-# attests the build via the job's OIDC id-token. If npm Trusted Publishing
-# is later configured at https://www.npmjs.com/settings/lore-hex/packages
-# (owner Lore-Hex, repo trusted-router-js, workflow release.yml,
-# environment npm), the token env line below can be dropped.
+# Publish only from version tags using the package's npm trusted publisher.
 on:
   push:
     tags:
@@ -14,17 +9,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      tarball_sha512: ${{ steps.pack.outputs.sha512 }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v7
         with:
           node-version-file: ".node-version"
           registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@11.21.3 --registry=https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
       - run: npm run lint
       - run: npm run check
       - run: npm test
+      - name: Hash the tested package for the independent publish runner
+        id: pack
+        run: |
+          pkg=$(npm pack --silent)
+          echo "sha512=$(sha512sum "$pkg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
   publish:
     needs: build
@@ -38,15 +41,23 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version-file: ".node-version"
-          registry-url: "https://registry.npmjs.org"
-      # npm >= 11.5 is required for OIDC trusted publishing; node 20 ships npm 10,
-      # which silently falls back to setup-node's placeholder token and 404s.
-      - run: npm install -g npm@latest
+      # No registry-url here: setup-node would write a token-based npmrc.
+      - run: npm install -g npm@11.21.3 --registry=https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
-      - run: npm publish --provenance
+      - name: Check the tag and install the exact tarball before publishing it
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EXPECTED_SHA512: ${{ needs.build.outputs.tarball_sha512 }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = "v$(node -p 'require("./package.json").version')"
+          pkg=$(npm pack --silent)
+          test "$(sha512sum "$pkg" | cut -d' ' -f1)" = "$EXPECTED_SHA512"
+          npm install --prefix "$RUNNER_TEMP/sdk-smoke" --ignore-scripts "$PWD/$pkg"
+          test "$("$RUNNER_TEMP/sdk-smoke/node_modules/.bin/trustedrouter" --version)" = "trustedrouter ${GITHUB_REF_NAME#v}"
+          echo "RELEASE_TARBALL=$pkg" >> "$GITHUB_ENV"
+      - run: npm publish "$RELEASE_TARBALL" --registry=https://registry.npmjs.org --access public --provenance
 
   github-release:
     needs: publish
