@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- Includes the verified inference SDK changes from the unpublished 0.11.0 tag.
+  The release now installs and checks the packed CLI before publishing via npm OIDC.
+
 ## 0.10.1 — 2026-10-15
 
 ### Fixed

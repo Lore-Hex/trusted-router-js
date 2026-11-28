@@ -31,19 +31,10 @@ Add GitHub Actions publisher**:
 - Workflow filename: `release.yml`
 - Environment: `npm`
 
-No token is needed after this. Re-run the failed release workflow (or
-re-push the tag) and it will publish.
-
-**Alternative (token auth instead of OIDC):** create an npm granular/automation
-token with publish rights to `@lore-hex/trusted-router`, add it as the repo
-secret `NPM_TOKEN`, and add to the `npm publish --provenance` step in
-`release.yml`:
-
-```yaml
-      - run: npm publish --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-```
+Allow direct publishing for that trusted publisher. No npm token is used.
+The release compares the SHA-512 of tarballs from two runners and installs
+and invokes the CLI from the exact tarball before publishing it. If registry
+configuration changes, retry the failed job; do not move a release tag.
 
 ## Gotcha: `npm error code E404` on publish means AUTH, not a missing package
 
